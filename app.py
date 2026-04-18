@@ -54,21 +54,30 @@ BLOCKED_RESOURCES = {"image", "stylesheet", "font", "media"}
 # ──────────────────────────────────────────────────────────────────────────────
 
 def ensure_playwright_browsers() -> None:
-    """Instaluje Chromium, pokud binárka chybí (nutné na Streamlit Cloud)."""
+    """
+    Instaluje pouze Chromium binárku (bez systémových závislostí).
+    Systémové balíčky (libnss3 atd.) musí být v packages.txt – nelze je
+    instalovat za běhu bez root oprávnění na Streamlit Cloudu.
+    """
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
-            p.chromium.launch(headless=True).close()
+            browser = p.chromium.launch(headless=True)
+            browser.close()
     except Exception:
-        st.toast("🔧 Instaluji Chromium – první spuštění může trvat déle…", icon="⏳")
-        subprocess.run(
+        st.toast("🔧 Instaluji Chromium binárku…", icon="⏳")
+        result = subprocess.run(
             [sys.executable, "-m", "playwright", "install", "chromium"],
-            check=True, capture_output=True
+            capture_output=True, text=True
         )
-        subprocess.run(
-            [sys.executable, "-m", "playwright", "install-deps", "chromium"],
-            check=True, capture_output=True
-        )
+        if result.returncode != 0:
+            st.error(
+                f"❌ Instalace Chromia selhala.\n\n"
+                f"**stderr:** `{result.stderr[-500:]}`\n\n"
+                "Ujistěte se, že `packages.txt` obsahuje systémové závislosti "
+                "a je součástí repozitáře."
+            )
+            st.stop()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -116,11 +125,26 @@ async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
 
 
 def _parse_platba(td_text: str) -> bool:
-    """Vrátí True, pokud zaplacená částka > 0 (parsuje 'XXXX z YYYY Kč')."""
-    m = re.search(r"(\d[\d\s]*)\s*z\s*\d", td_text.replace("\xa0", " "))
+    """
+    Vrátí True, pokud zaplacená částka > 0.
+    Zpracuje formáty: '15000 z 15000 Kč', '15 000 z 15 000 Kč',
+    '15\xa0000 z 15\xa0000 Kč' i varianty bez mezery před 'z'.
+    """
+    # Normalizace: nezlomitelné mezery → běžná mezera
+    normalized = td_text.replace("\xa0", " ").replace("\u202f", " ").strip()
+    # Extrahuj první číslo před slovem "z" (zaplaceno z celkem)
+    m = re.search(r"([\d][\d\s]*?)\s+z\s+[\d]", normalized)
     if m:
         try:
-            return int(m.group(1).replace(" ", "")) > 0
+            zaplacena = int(re.sub(r"\s+", "", m.group(1)))
+            return zaplacena > 0
+        except ValueError:
+            pass
+    # Fallback: pokud buňka obsahuje jen číslo > 0 (jiný formát CRM)
+    only_num = re.fullmatch(r"\s*([\d\s]+)\s*", normalized)
+    if only_num:
+        try:
+            return int(re.sub(r"\s+", "", only_num.group(1))) > 0
         except ValueError:
             pass
     return False
@@ -144,14 +168,19 @@ async def _scrape_detail(page, url: str) -> dict | None:
     celkem = 0
     zaplaceno = 0
 
-    for row in rows:
+    for i, row in enumerate(rows):
         text = (await row.inner_text()).strip()
+        if i == 0:               # první řádek tbody je záhlaví – přeskočit
+            continue
         if "∑" in text:          # souhrnný řádek – přeskočit
+            continue
+        if not text:             # prázdný řádek – přeskočit
             continue
         celkem += 1
         tds = await row.query_selector_all("td")
         if len(tds) >= 5:
-            platba_text = await tds[4].inner_text()
+            # 5. sloupec (index 4) = stav platby, např. "15 000 z 15 000 Kč"
+            platba_text = (await tds[4].inner_text()).strip()
             if _parse_platba(platba_text):
                 zaplaceno += 1
 
@@ -252,16 +281,24 @@ def render_chart(df: pd.DataFrame) -> None:
         text=df["Nezaplaceno"],
         textposition="inside",
     ))
+    max_stack = (df["Zaplaceno"] + df["Nezaplaceno"]).max() if not df.empty else 1
+    y_max = max(max_stack * 1.45, 10)   # 45% rezerva nad nejvyšším sloupcem
+
     fig.update_layout(
         barmode="stack",
         title="Obsazenost a stav plateb po termínech",
         xaxis_title="Termín",
-        yaxis_title="Počet žáků",
+        yaxis=dict(
+            title="Počet žáků",
+            range=[0, y_max],
+            dtick=1,              # vždy celá čísla na ose
+        ),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(size=12),
-        height=420,
+        font=dict(size=13),
+        height=480,
+        uniformtext=dict(mode="show", minsize=11),  # popisky vždy čitelné
     )
     st.plotly_chart(fig, use_container_width=True)
 
