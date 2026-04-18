@@ -272,7 +272,62 @@ def cached_data(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
 # UI
 # ──────────────────────────────────────────────────────────────────────────────
 
-def render_chart(df: pd.DataFrame) -> None:
+def render_table(df: pd.DataFrame) -> None:
+    rows = ""
+    for _, r in df.iterrows():
+        pct     = r["Zaplaceno"] / max(r["Žáků celkem"], 1) * 100
+        bar_w   = f"{pct:.1f}%"
+        zap_col = "#2ecc71" if r["Zaplaceno"] > 0 else "#aaa"
+        nez_col = "#e74c3c" if r["Nezaplaceno"] > 0 else "#aaa"
+        rows += f"""
+        <tr>
+          <td><a href="{r['URL']}" target="_blank" style="
+              color:inherit;font-weight:600;text-decoration:none;
+              border-bottom:1px dashed #999;">
+            {r['Termín']}
+          </a></td>
+          <td style="text-align:center">{r['Žáků celkem']}</td>
+          <td style="text-align:center;color:{zap_col};font-weight:600">{r['Zaplaceno']}</td>
+          <td style="text-align:center;color:{nez_col};font-weight:600">{r['Nezaplaceno']}</td>
+          <td style="min-width:180px">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <div style="flex:1;background:#e0e0e0;border-radius:6px;height:10px;overflow:hidden;">
+                <div style="width:{bar_w};background:#2ecc71;height:100%;border-radius:6px;
+                            transition:width .3s;"></div>
+              </div>
+              <span style="font-size:.85rem;min-width:38px;text-align:right">{pct:.0f}&nbsp;%</span>
+            </div>
+          </td>
+        </tr>"""
+
+    html = f"""
+    <style>
+      .nobe-table {{ width:100%;border-collapse:collapse;font-size:.92rem; }}
+      .nobe-table th {{
+        padding:8px 12px;text-align:left;
+        border-bottom:2px solid #555;
+        font-size:.8rem;text-transform:uppercase;
+        letter-spacing:.05em;opacity:.65;
+      }}
+      .nobe-table td {{ padding:9px 12px;border-bottom:1px solid rgba(128,128,128,.2); }}
+      .nobe-table tr:last-child td {{ border-bottom:none; }}
+      .nobe-table tr:hover td {{ background:rgba(128,128,128,.07); }}
+    </style>
+    <table class="nobe-table">
+      <thead><tr>
+        <th>Termín</th>
+        <th style="text-align:center">Celkem</th>
+        <th style="text-align:center">✅ Zaplaceno</th>
+        <th style="text-align:center">❌ Nezaplaceno</th>
+        <th>Uhrazeno</th>
+      </tr></thead>
+      <tbody>{rows}</tbody>
+    </table>"""
+
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def _DELETED_render_chart(df: pd.DataFrame) -> None:
     fig = go.Figure()
     fig.add_trace(go.Bar(
         name="Zaplaceno ✅",
@@ -396,30 +451,7 @@ def main() -> None:
 
     st.markdown("---")
 
-    # ── Graf ──
-    render_chart(df)
-
-    st.markdown("---")
-
-    # ── Tabulka ──
-    st.subheader("📄 Detailní přehled termínů")
-    display_df = df[["Termín", "Žáků celkem", "Zaplaceno", "Nezaplaceno"]].copy()
-    display_df["Zaplaceno %"] = (
-        display_df["Zaplaceno"] / display_df["Žáků celkem"].replace(0, 1) * 100
-    ).round(1).astype(str) + " %"
-
-    st.dataframe(
-        display_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Termín":       st.column_config.TextColumn("📅 Termín"),
-            "Žáků celkem":  st.column_config.NumberColumn("👥 Žáků celkem"),
-            "Zaplaceno":    st.column_config.NumberColumn("✅ Zaplaceno"),
-            "Nezaplaceno":  st.column_config.NumberColumn("❌ Nezaplaceno"),
-            "Zaplaceno %":  st.column_config.TextColumn("📊 Uhrazeno"),
-        },
-    )
+    render_table(df)
 
 
 if __name__ == "__main__":
