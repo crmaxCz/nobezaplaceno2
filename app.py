@@ -54,21 +54,30 @@ BLOCKED_RESOURCES = {"image", "stylesheet", "font", "media"}
 # ──────────────────────────────────────────────────────────────────────────────
 
 def ensure_playwright_browsers() -> None:
-    """Instaluje Chromium, pokud binárka chybí (nutné na Streamlit Cloud)."""
+    """
+    Instaluje pouze Chromium binárku (bez systémových závislostí).
+    Systémové balíčky (libnss3 atd.) musí být v packages.txt – nelze je
+    instalovat za běhu bez root oprávnění na Streamlit Cloudu.
+    """
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
-            p.chromium.launch(headless=True).close()
+            browser = p.chromium.launch(headless=True)
+            browser.close()
     except Exception:
-        st.toast("🔧 Instaluji Chromium – první spuštění může trvat déle…", icon="⏳")
-        subprocess.run(
+        st.toast("🔧 Instaluji Chromium binárku…", icon="⏳")
+        result = subprocess.run(
             [sys.executable, "-m", "playwright", "install", "chromium"],
-            check=True, capture_output=True
+            capture_output=True, text=True
         )
-        subprocess.run(
-            [sys.executable, "-m", "playwright", "install-deps", "chromium"],
-            check=True, capture_output=True
-        )
+        if result.returncode != 0:
+            st.error(
+                f"❌ Instalace Chromia selhala.\n\n"
+                f"**stderr:** `{result.stderr[-500:]}`\n\n"
+                "Ujistěte se, že `packages.txt` obsahuje systémové závislosti "
+                "a je součástí repozitáře."
+            )
+            st.stop()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
