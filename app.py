@@ -372,8 +372,16 @@ def main() -> None:
         st.stop()
 
     # Seřadit od nejbližšího termínu (vlevo) do vzdálenějších (vpravo)
+    def _sort_key(s):
+        for fmt in ("%d.%m.%Y %H:%M", "%d.%m.%Y"):
+            try:
+                return pd.to_datetime(s, format=fmt)
+            except ValueError:
+                pass
+        return pd.Timestamp.max
+
     df = df.copy()
-    df["_sort"] = df["Termín"].apply(parse_termin_dt)
+    df["_sort"] = df["Termín"].apply(_sort_key)
     df = df.sort_values("_sort").drop(columns="_sort").reset_index(drop=True)
 
     # ── Metriky ──
