@@ -371,6 +371,11 @@ def main() -> None:
         st.info("ℹ️ Žádná data k zobrazení. Zkuste aktualizovat nebo zvolte jinou pobočku.")
         st.stop()
 
+    # Seřadit od nejbližšího termínu (vlevo) do vzdálenějších (vpravo)
+    df = df.copy()
+    df["_sort"] = df["Termín"].apply(parse_termin_dt)
+    df = df.sort_values("_sort").drop(columns="_sort").reset_index(drop=True)
+
     # ── Metriky ──
     col1, col2, col3 = st.columns(3)
     col1.metric("📋 Počet termínů",  len(df))
