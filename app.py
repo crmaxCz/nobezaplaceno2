@@ -453,7 +453,6 @@ def main() -> None:
         "💳 Celkem zaplaceno",
         int(df["Zaplaceno"].sum()),
         delta=f"{int(df['Zaplaceno'].sum() / max(df['Žáků celkem'].sum(), 1) * 100)} % má alespoň něco uhrazeno",
-        delta_color="off"
     )
     col3.caption(
         f"{zap_czk:,} z {pred_czk:,} Kč &nbsp;·&nbsp; {zap_pct:.0f} %"
