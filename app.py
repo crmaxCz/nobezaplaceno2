@@ -124,37 +124,32 @@ async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
     return result
 
 
-def _parse_platba(td_text: str) -> bool:
+def _parse_castky(td_text: str) -> tuple[int, int]:
     """
-    Vrátí True, pokud zaplacená částka > 0.
-
-    Reálné formáty z CRM:
-      Zaplaceno:   "28 800,- Kč z 28 800,- Kč"
-      Nezaplaceno: " z 6 950,- Kč"   (před "z" nic není)
-
-    Logika: vezme vše PŘED slovem " z " a zkusí z toho extrahovat číslo.
-    Pokud tam žádné číslo není (prázdný řetězec před "z"), vrátí False.
+    Vrátí (zaplaceno_czk, predepsano_czk).
+    Formáty: '7 700,- Kč z 29 300,- Kč'  → (7700, 29300)
+             ' z 6 950,- Kč'              → (0, 6950)
+             '28 800,- Kč z 28 800,- Kč' → (28800, 28800)
     """
-    # Normalizace: &nbsp; a thin space → běžná mezera
     normalized = (
         td_text
-        .replace("\xa0", " ")
-        .replace("\u202f", " ")
-        .replace(",-", "")       # odstraní ",- Kč" suffix
+        .replace("\xa0", " ").replace("\u202f", " ")
+        .replace(",-", "").replace("Kč", "").replace("CZK", "")
         .strip()
     )
-    # Rozdělíme na část před a za " z "
     parts = re.split(r"\s+z\s+", normalized, maxsplit=1)
-    if len(parts) < 2:
-        return False             # formát neodpovídá – považuj za nezaplaceno
-    before_z = parts[0].strip()
-    if not before_z:
-        return False             # prázdné před "z" → nezaplaceno
-    # Vytáhneme všechny číslice a převedeme na int
-    digits = re.sub(r"\D", "", before_z)
-    if not digits:
-        return False
-    return int(digits) > 0
+    def to_int(s: str) -> int:
+        digits = re.sub(r"\D", "", s.strip())
+        return int(digits) if digits else 0
+    if len(parts) == 2:
+        return to_int(parts[0]), to_int(parts[1])
+    return 0, to_int(parts[0])
+
+
+def _parse_platba(td_text: str) -> bool:
+    """Zpětná kompatibilita – vrátí True pokud zaplaceno > 0."""
+    zap, _ = _parse_castky(td_text)
+    return zap > 0
 
 
 async def _scrape_detail(page, url: str) -> dict | None:
@@ -182,6 +177,8 @@ async def _scrape_detail(page, url: str) -> dict | None:
 
     celkem = 0
     zaplaceno = 0
+    zaplaceno_czk  = 0
+    predepsano_czk = 0
     tbody = await page.query_selector(".table-striped tbody")
 
     if tbody:
@@ -198,17 +195,22 @@ async def _scrape_detail(page, url: str) -> dict | None:
             tds = await row.query_selector_all("td")
             if len(tds) >= 5:
                 platba_text = (await tds[4].inner_text()).strip()
-                if _parse_platba(platba_text):
+                zap_czk, pred_czk = _parse_castky(platba_text)
+                if zap_czk > 0:
                     zaplaceno += 1
+                zaplaceno_czk  += zap_czk
+                predepsano_czk += pred_czk
     # tbody neexistuje → 0 žáků, termín se přesto zobrazí
 
     return {
-        "Termín":      datum_str,
-        "ID":          termin_id,
-        "Žáků celkem": celkem,
-        "Zaplaceno":   zaplaceno,
-        "Nezaplaceno": celkem - zaplaceno,
-        "URL":         url,
+        "Termín":          datum_str,
+        "ID":              termin_id,
+        "Žáků celkem":     celkem,
+        "Zaplaceno":       zaplaceno,
+        "Nezaplaceno":     celkem - zaplaceno,
+        "Zaplaceno_Kč":    zaplaceno_czk,
+        "Předepsáno_Kč":   predepsano_czk,
+        "URL":             url,
     }
 
 
@@ -443,10 +445,18 @@ def main() -> None:
     col1, col2, col3 = st.columns(3)
     col1.metric("📋 Počet termínů",  len(df))
     col2.metric("👥 Žáků celkem",    int(df["Žáků celkem"].sum()))
+
+    zap_czk  = int(df["Zaplaceno_Kč"].sum())
+    pred_czk = int(df["Předepsáno_Kč"].sum())
+    zap_pct  = zap_czk / pred_czk * 100 if pred_czk else 0
     col3.metric(
         "💳 Celkem zaplaceno",
         int(df["Zaplaceno"].sum()),
         delta=f"{int(df['Zaplaceno'].sum() / max(df['Žáků celkem'].sum(), 1) * 100)} %",
+    )
+    col3.caption(
+        f"{zap_czk:,} z {pred_czk:,} Kč &nbsp;·&nbsp; {zap_pct:.0f} %"
+        .replace(",", "\u00a0")  # české oddělení tisíců
     )
 
     st.markdown("---")
