@@ -212,7 +212,7 @@ async def _scrape_detail(page, url: str) -> dict | None:
 
 async def scrape_all(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
     """Hlavní async funkce – přihlásí se, projde termíny, vrátí DataFrame."""
-    datum = date.today().strftime("%Y-%m-%d")
+    datum = date.today().strftime("%d.%m.%Y")   # CRM vyžaduje formát DD.MM.YYYY
     results = []
 
     async with async_playwright() as pw:
@@ -336,9 +336,13 @@ def main() -> None:
     with st.sidebar:
         st.title("🚗 NOBE Statistiky")
         st.markdown("---")
-        pobocka_nazev = st.selectbox("📍 Pobočka", list(POBOCKY.keys()))
+        st.markdown("**Pobočka**")
+        pobocka_nazev = st.radio(
+            label="pobocka",
+            options=list(POBOCKY.keys()),
+            label_visibility="collapsed",
+        )
         lokalita_id = POBOCKY[pobocka_nazev]
-        st.caption(f"ID pobočky: `{lokalita_id}`")
         st.markdown("---")
 
         if st.button("🔄 Aktualizovat data", use_container_width=True, type="primary"):
