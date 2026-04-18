@@ -167,38 +167,40 @@ async def _scrape_detail(page, url: str) -> dict | None:
     # Název/datum termínu z nadpisu nebo title
     nazev = await page.title()
 
-    tbody = await page.query_selector(".table-striped tbody")
-    if not tbody:
-        return None
-
-    rows = await tbody.query_selector_all("tr")
-    celkem = 0
-    zaplaceno = 0
-
-    for i, row in enumerate(rows):
-        text = (await row.inner_text()).strip()
-        if i == 0:               # první řádek tbody je záhlaví – přeskočit
-            continue
-        if "∑" in text:          # souhrnný řádek – přeskočit
-            continue
-        if not text:             # prázdný řádek – přeskočit
-            continue
-        celkem += 1
-        tds = await row.query_selector_all("td")
-        if len(tds) >= 5:
-            # 5. sloupec (index 4) = stav platby, např. "15 000 z 15 000 Kč"
-            platba_text = (await tds[4].inner_text()).strip()
-            if _parse_platba(platba_text):
-                zaplaceno += 1
-
-    # Termín – zkus vytáhnout datum z URL nebo stránky
+    # Termín ID a obsah stránky – potřebujeme před i po tabulce
     termin_match = re.search(r"edit_id=(\d+)", url)
     termin_id = termin_match.group(1) if termin_match else "?"
-
-    # Pokusíme se najít datum termínu v obsahu stránky
     content = await page.content()
-    datum_match = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})", content)
-    datum_str = datum_match.group(1) if datum_match else termin_id
+
+    # Pokus o datum + čas → unikátní popisek osy X (např. "23.04.2026 08:00")
+    dt_match = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})[^\d]{0,10}(\d{1,2}:\d{2})", content)
+    if dt_match:
+        datum_str = f"{dt_match.group(1)} {dt_match.group(2)}"
+    else:
+        d_match = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})", content)
+        datum_str = d_match.group(1) if d_match else f"#{termin_id}"
+
+    celkem = 0
+    zaplaceno = 0
+    tbody = await page.query_selector(".table-striped tbody")
+
+    if tbody:
+        rows = await tbody.query_selector_all("tr")
+        for i, row in enumerate(rows):
+            text = (await row.inner_text()).strip()
+            if i == 0:       # záhlaví
+                continue
+            if "∑" in text:  # souhrnný řádek
+                continue
+            if not text:
+                continue
+            celkem += 1
+            tds = await row.query_selector_all("td")
+            if len(tds) >= 5:
+                platba_text = (await tds[4].inner_text()).strip()
+                if _parse_platba(platba_text):
+                    zaplaceno += 1
+    # tbody neexistuje → 0 žáků, termín se přesto zobrazí
 
     return {
         "Termín":      datum_str,
