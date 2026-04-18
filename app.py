@@ -127,27 +127,34 @@ async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
 def _parse_platba(td_text: str) -> bool:
     """
     Vrátí True, pokud zaplacená částka > 0.
-    Zpracuje formáty: '15000 z 15000 Kč', '15 000 z 15 000 Kč',
-    '15\xa0000 z 15\xa0000 Kč' i varianty bez mezery před 'z'.
+
+    Reálné formáty z CRM:
+      Zaplaceno:   "28 800,- Kč z 28 800,- Kč"
+      Nezaplaceno: " z 6 950,- Kč"   (před "z" nic není)
+
+    Logika: vezme vše PŘED slovem " z " a zkusí z toho extrahovat číslo.
+    Pokud tam žádné číslo není (prázdný řetězec před "z"), vrátí False.
     """
-    # Normalizace: nezlomitelné mezery → běžná mezera
-    normalized = td_text.replace("\xa0", " ").replace("\u202f", " ").strip()
-    # Extrahuj první číslo před slovem "z" (zaplaceno z celkem)
-    m = re.search(r"([\d][\d\s]*?)\s+z\s+[\d]", normalized)
-    if m:
-        try:
-            zaplacena = int(re.sub(r"\s+", "", m.group(1)))
-            return zaplacena > 0
-        except ValueError:
-            pass
-    # Fallback: pokud buňka obsahuje jen číslo > 0 (jiný formát CRM)
-    only_num = re.fullmatch(r"\s*([\d\s]+)\s*", normalized)
-    if only_num:
-        try:
-            return int(re.sub(r"\s+", "", only_num.group(1))) > 0
-        except ValueError:
-            pass
-    return False
+    # Normalizace: &nbsp; a thin space → běžná mezera
+    normalized = (
+        td_text
+        .replace("\xa0", " ")
+        .replace("\u202f", " ")
+        .replace(",-", "")       # odstraní ",- Kč" suffix
+        .strip()
+    )
+    # Rozdělíme na část před a za " z "
+    parts = re.split(r"\s+z\s+", normalized, maxsplit=1)
+    if len(parts) < 2:
+        return False             # formát neodpovídá – považuj za nezaplaceno
+    before_z = parts[0].strip()
+    if not before_z:
+        return False             # prázdné před "z" → nezaplaceno
+    # Vytáhneme všechny číslice a převedeme na int
+    digits = re.sub(r"\D", "", before_z)
+    if not digits:
+        return False
+    return int(digits) > 0
 
 
 async def _scrape_detail(page, url: str) -> dict | None:
