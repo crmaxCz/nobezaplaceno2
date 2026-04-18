@@ -442,6 +442,11 @@ def main() -> None:
     df = df.sort_values("_sort").drop(columns="_sort").reset_index(drop=True)
 
     # ── Metriky ──
+    st.markdown("""
+        <style>
+        [data-testid="stMetricDelta"] svg { display: none; }
+        </style>""", unsafe_allow_html=True)
+
     col1, col2, col3 = st.columns(3)
     col1.metric("📋 Počet termínů",  len(df))
     col2.metric("👥 Žáků celkem",    int(df["Žáků celkem"].sum()))
@@ -452,12 +457,11 @@ def main() -> None:
     col3.metric(
         "💳 Celkem zaplaceno",
         int(df["Zaplaceno"].sum()),
-        delta=f"{int(df['Zaplaceno'].sum() / max(df['Žáků celkem'].sum(), 1) * 100)} % má alespoň něco uhrazeno",
-        delta_color="off"
+        delta=f"{int(df['Zaplaceno'].sum() / max(df['Žáků celkem'].sum(), 1) * 100)} %",
     )
     col3.caption(
-        f"{zap_czk:,} z {pred_czk:,} Kč &nbsp;·&nbsp; {zap_pct:.0f} %"
-        .replace(",", "\u00a0")  # české oddělení tisíců
+        f"{zap_czk:,} z {pred_czk:,} Kč — {zap_pct:.0f} % má alespoň něco uhrazeno"
+        .replace(",", "\u00a0")
     )
 
     st.markdown("---")
