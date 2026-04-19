@@ -282,7 +282,9 @@ def run_scraper(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
 # ──────────────────────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def cached_data(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
+def cached_data(lokalita: int) -> pd.DataFrame:
+    email = st.secrets["moje_jmeno"]
+    heslo = st.secrets["moje_heslo"]
     return run_scraper(email, heslo, lokalita)
 
 
@@ -438,7 +440,7 @@ def main() -> None:
 
     # ── Načtení dat ──
     with st.spinner(f"Načítám data pro pobočku **{pobocka_nazev}**…"):
-        df = cached_data(email, heslo, lokalita_id)
+        df = cached_data(lokalita_id)
 
     if df.empty:
         st.info("ℹ️ Žádná data k zobrazení. Zkuste aktualizovat nebo zvolte jinou pobočku.")
