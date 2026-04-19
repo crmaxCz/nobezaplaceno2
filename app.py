@@ -53,11 +53,11 @@ BLOCKED_RESOURCES = {"image", "stylesheet", "font", "media"}
 # PLAYWRIGHT – INSTALACE BINÁREK (cloud kompatibilita)
 # ──────────────────────────────────────────────────────────────────────────────
 
+@st.cache_resource
 def ensure_playwright_browsers() -> None:
     """
     Instaluje pouze Chromium binárku (bez systémových závislostí).
-    Systémové balíčky (libnss3 atd.) musí být v packages.txt – nelze je
-    instalovat za běhu bez root oprávnění na Streamlit Cloudu.
+    @st.cache_resource zajistí jediné spuštění za lifetime deploymentu.
     """
     try:
         from playwright.sync_api import sync_playwright
