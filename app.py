@@ -67,7 +67,7 @@ def _show_zebra(placeholder, text: str, pct: int | None = None) -> None:
     gif_b64 = _gif_base64()
     img_tag = (
         f'<img src="data:image/gif;base64,{gif_b64}" '
-        f'style="width:200px;height:auto;display:block;margin:0 auto;">'
+        f'style="width:100px;height:auto;display:block;margin:0 auto;">'
         if gif_b64 else
         '<div style="font-size:3rem;text-align:center">🦓</div>'
     )
@@ -423,8 +423,14 @@ def main() -> None:
         [data-testid="stMetricDelta"] svg { display: none; }
         </style>""", unsafe_allow_html=True)
 
-    # ── Loading placeholder (zebra) ──
+    # ── Loading + content placeholders ──
     loading_slot = st.empty()
+    content_slot = st.empty()
+
+    # Okamžitě vymaž starý obsah předchozí pobočky
+    content_slot.empty()
+
+    # Zobraz zebru
     _show_zebra(loading_slot, "Stahuji data, načítám termíny a počítám peníze...")
     st.session_state["_progress_slot"] = loading_slot
 
@@ -439,7 +445,7 @@ def main() -> None:
     st.session_state.pop("_progress_slot", None)
 
     if df.empty:
-        st.info("ℹ️ Žádná data k zobrazení. Zkuste aktualizovat nebo zvolte jinou pobočku.")
+        content_slot.info("ℹ️ Žádná data k zobrazení. Zkuste aktualizovat nebo zvolte jinou pobočku.")
         st.stop()
 
     # ── Řazení ──
@@ -455,28 +461,26 @@ def main() -> None:
     df["_sort"] = df["Termín"].apply(_sort_key)
     df = df.sort_values("_sort").drop(columns="_sort").reset_index(drop=True)
 
-    # ── Metriky ──
-    zap_czk  = int(df["Zaplaceno_Kč"].sum())
-    pred_czk = int(df["Předepsáno_Kč"].sum())
-    zap_pct  = zap_czk / pred_czk * 100 if pred_czk else 0
+    # ── Obsah ──
+    with content_slot.container():
+        zap_czk  = int(df["Zaplaceno_Kč"].sum())
+        pred_czk = int(df["Předepsáno_Kč"].sum())
+        zap_pct  = zap_czk / pred_czk * 100 if pred_czk else 0
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("📋 Počet termínů",  len(df))
-    col2.metric("👥 Žáků celkem",    int(df["Žáků celkem"].sum()))
-    col3.metric(
-        "💳 Celkem zaplaceno",
-        int(df["Zaplaceno"].sum()),
-        delta=f"{int(df['Zaplaceno'].sum() / max(df['Žáků celkem'].sum(), 1) * 100)} % má alespoň něco uhrazeno",
-    )
-    col3.caption(
-        f"{zap_czk:,} z {pred_czk:,} Kč — {zap_pct:.0f} %"
-        .replace(",", "\u00a0")
-    )
-
-    st.markdown("---")
-
-    # ── Tabulka ──
-    render_table(df)
+        col1, col2, col3 = st.columns(3)
+        col1.metric("📋 Počet termínů",  len(df))
+        col2.metric("👥 Žáků celkem",    int(df["Žáků celkem"].sum()))
+        col3.metric(
+            "💳 Celkem zaplaceno",
+            int(df["Zaplaceno"].sum()),
+            delta=f"{int(df['Zaplaceno'].sum() / max(df['Žáků celkem'].sum(), 1) * 100)} % má alespoň něco uhrazeno",
+        )
+        col3.caption(
+            f"{zap_czk:,} z {pred_czk:,} Kč — {zap_pct:.0f} %"
+            .replace(",", "\u00a0")
+        )
+        st.markdown("---")
+        render_table(df)
 
 
 if __name__ == "__main__":
