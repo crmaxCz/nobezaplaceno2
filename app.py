@@ -266,22 +266,17 @@ async def scrape_all(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
 
         if not await _login(page, email, heslo):
             await browser.close()
-            st.error("❌ Přihlášení selhalo – zkontrolujte přihlašovací údaje v st.secrets.")
-            return pd.DataFrame()
+            return pd.DataFrame(columns=["_error_login"])
 
         detail_urls = await _get_detail_urls(page, datum, lokalita)
         if not detail_urls:
             await browser.close()
-            st.warning("⚠️ Nenalezeny žádné termíny pro zvolené datum a pobočku.")
             return pd.DataFrame()
 
         total       = len(detail_urls)
         CONCURRENCY = 4
         semaphore   = asyncio.Semaphore(CONCURRENCY)
         completed   = {"n": 0}
-
-        # Progress slot předaný z main() přes session_state
-        progress_slot = st.session_state.get("_progress_slot")
 
         async def fetch_one(url: str) -> dict | None:
             async with semaphore:
@@ -290,13 +285,6 @@ async def scrape_all(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
                 result = await _scrape_detail(p, url)
                 await p.close()
                 completed["n"] += 1
-                if progress_slot is not None:
-                    pct = int(completed["n"] / total * 100)
-                    _show_zebra(
-                        progress_slot,
-                        "Stahuji data, načítám termíny a počítám peníze...",
-                        pct=pct,
-                    )
                 return result
 
         raw     = await asyncio.gather(*[fetch_one(u) for u in detail_urls])
@@ -443,6 +431,10 @@ def main() -> None:
     # ── Vymaž loading screen ──
     loading_slot.empty()
     st.session_state.pop("_progress_slot", None)
+
+    if "_error_login" in df.columns:
+        content_slot.error("❌ Přihlášení selhalo – zkontrolujte přihlašovací údaje v st.secrets.")
+        st.stop()
 
     if df.empty:
         content_slot.info("ℹ️ Žádná data k zobrazení. Zkuste aktualizovat nebo zvolte jinou pobočku.")
