@@ -178,18 +178,30 @@ async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
     except PlaywrightTimeout:
         return []
 
-    # Hledat pouze uvnitř řádků tabulky výsledků, ne celé stránky
-    rows = await page.query_selector_all('tr:has(a[href*="admin_prednaska.php?edit_id="])')
+    # Hledat pouze v hlavní obsahové tabulce (první tabulka v #content nebo main)
+    # Fallback: celá stránka, ale s omezením na řádky s odkazem
     seen, result = set(), []
-    for row in rows:
-        link = await row.query_selector('a[href*="admin_prednaska.php?edit_id="]')
-        if not link:
-            continue
-        href = await link.get_attribute("href")
-        if href and href not in seen:
-            full = href if href.startswith("http") else f"{BASE_URL}/{href.lstrip('/')}"
-            seen.add(href)
-            result.append(full)
+    for container in ["#content table", "main table", ".container table", "table"]:
+        rows = await page.query_selector_all(
+            f'{container} tr:has(a[href*="admin_prednaska.php?edit_id="])'
+        )
+        if rows:
+            for row in rows:
+                link = await row.query_selector('a[href*="admin_prednaska.php?edit_id="]')
+                if not link:
+                    continue
+                href = await link.get_attribute("href")
+                if href and href not in seen:
+                    full = href if href.startswith("http") else f"{BASE_URL}/{href.lstrip('/')}"
+                    seen.add(href)
+                    result.append(full)
+            break  # použij první container který vrátil výsledky
+
+    # Pojistka: pokud CRM ignoruje datum filtr a vrátí historii,
+    # omezíme na max 60 záznamů (více budoucích termínů reálně nenastane)
+    if len(result) > 60:
+        result = result[:60]
+
     return result
 
 
