@@ -177,9 +177,14 @@ async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
         await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
     except PlaywrightTimeout:
         return []
-    links = await page.query_selector_all('a[href*="admin_prednaska.php?edit_id="]')
+
+    # Hledat pouze uvnitř řádků tabulky výsledků, ne celé stránky
+    rows = await page.query_selector_all('tr:has(a[href*="admin_prednaska.php?edit_id="])')
     seen, result = set(), []
-    for link in links:
+    for row in rows:
+        link = await row.query_selector('a[href*="admin_prednaska.php?edit_id="]')
+        if not link:
+            continue
         href = await link.get_attribute("href")
         if href and href not in seen:
             full = href if href.startswith("http") else f"{BASE_URL}/{href.lstrip('/')}"
