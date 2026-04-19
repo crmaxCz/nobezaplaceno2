@@ -54,30 +54,32 @@ BLOCKED_RESOURCES = {"image", "stylesheet", "font", "media"}
 # ──────────────────────────────────────────────────────────────────────────────
 
 @st.cache_resource
-def ensure_playwright_browsers() -> None:
-    """
-    Instaluje pouze Chromium binárku (bez systémových závislostí).
-    @st.cache_resource zajistí jediné spuštění za lifetime deploymentu.
-    """
+def _install_chromium() -> str | None:
+    """Spustí se jednou za lifetime deploymentu. Vrací chybový text nebo None."""
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            browser.close()
+            p.chromium.launch(headless=True).close()
+        return None
     except Exception:
-        st.toast("🔧 Instaluji Chromium binárku…", icon="⏳")
         result = subprocess.run(
             [sys.executable, "-m", "playwright", "install", "chromium"],
             capture_output=True, text=True
         )
         if result.returncode != 0:
-            st.error(
-                f"❌ Instalace Chromia selhala.\n\n"
-                f"**stderr:** `{result.stderr[-500:]}`\n\n"
-                "Ujistěte se, že `packages.txt` obsahuje systémové závislosti "
-                "a je součástí repozitáře."
-            )
-            st.stop()
+            return result.stderr[-500:]
+        return None
+
+
+def ensure_playwright_browsers() -> None:
+    """Wrapper – st.* volání jsou záměrně zde, mimo cachovanou funkci."""
+    err = _install_chromium()
+    if err:
+        st.error(
+            f"❌ Instalace Chromia selhala.\n\n**stderr:** `{err}`\n\n"
+            "Ujistěte se, že `packages.txt` obsahuje systémové závislosti."
+        )
+        st.stop()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
