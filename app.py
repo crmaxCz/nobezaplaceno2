@@ -164,18 +164,26 @@ async def _scrape_detail(page, url: str) -> dict | None:
     # Název/datum termínu z nadpisu nebo title
     nazev = await page.title()
 
-    # Termín ID a obsah stránky – potřebujeme před i po tabulce
     termin_match = re.search(r"edit_id=(\d+)", url)
     termin_id = termin_match.group(1) if termin_match else "?"
-    content = await page.content()
 
-    # Pokus o datum + čas → unikátní popisek osy X (např. "23.04.2026 08:00")
-    dt_match = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})[^\d]{0,10}(\d{1,2}:\d{2})", content)
-    if dt_match:
-        datum_str = f"{dt_match.group(1)} {dt_match.group(2)}"
-    else:
-        d_match = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})", content)
-        datum_str = d_match.group(1) if d_match else f"#{termin_id}"
+    # Datum a čas – čteme z konkrétních elementů, ne z celého DOM
+    datum_str = None
+    for selector in ["h1", "h2", ".card-title", "title", ".page-header"]:
+        el = await page.query_selector(selector)
+        if not el:
+            continue
+        text = await el.inner_text()
+        dt_match = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})[^\d]{0,10}(\d{1,2}:\d{2})", text)
+        if dt_match:
+            datum_str = f"{dt_match.group(1)} {dt_match.group(2)}"
+            break
+        d_match = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})", text)
+        if d_match:
+            datum_str = d_match.group(1)
+            break
+    if not datum_str:
+        datum_str = f"#{termin_id}"
 
     celkem = 0
     zaplaceno = 0
