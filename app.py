@@ -471,10 +471,10 @@ def main() -> None:
     col3.metric(
         "💳 Celkem zaplaceno",
         int(df["Zaplaceno"].sum()),
-        delta=f"{int(df['Zaplaceno'].sum() / max(df['Žáků celkem'].sum(), 1) * 100)} %",
+        delta=f"{int(df['Zaplaceno'].sum() / max(df['Žáků celkem'].sum(), 1) * 100)} % má alespoň něco uhrazeno",
     )
     col3.caption(
-        f"{zap_czk:,} z {pred_czk:,} Kč — {zap_pct:.0f} % má alespoň něco uhrazeno"
+        f"{zap_czk:,} z {pred_czk:,} Kč — {zap_pct:.0f} %"
         .replace(",", "\u00a0")
     )
 
