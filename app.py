@@ -356,16 +356,23 @@ async def scrape_all_global(email: str, heslo: str) -> pd.DataFrame:
 # CACHE & UI
 # ──────────────────────────────────────────────────────────────────────────────
 
+# ──────────────────────────────────────────────────────────────────────────────
+# CACHE & UI
+# ──────────────────────────────────────────────────────────────────────────────
+
 @st.cache_data(ttl=1800, show_spinner=False)
-def get_all_data() -> pd.DataFrame:
-    """Načte global data jednou za 30 minut."""
+async def get_all_data() -> pd.DataFrame:
+    """Asynchronní cache pro globální scrape. Streamlit to umí nativně."""
     email = st.secrets["moje_jmeno"]
     heslo = st.secrets["moje_heslo"]
-    return scrape_all_global(email, heslo)
+    return await scrape_all_global(email, heslo)
+
 
 def cached_data(lokalita_id: int) -> pd.DataFrame:
-    """Vrátí data pro konkrétní pobočku z globální cache."""
-    df_all = get_all_data()
+    """Sync wrapper, který bezpečně spustí async cache a vrátí DataFrame."""
+    import asyncio
+    # Spustí async funkci v kontextu Streamlitu
+    df_all = asyncio.get_event_loop().run_until_complete(get_all_data())
     
     if "_error_login" in df_all.columns:
         return df_all
@@ -373,7 +380,7 @@ def cached_data(lokalita_id: int) -> pd.DataFrame:
     if df_all.empty:
         return pd.DataFrame()
         
-    # Filtrujeme data pro vybranou pobočku
+    # Filtrujeme data pro konkrétní pobočku
     df_filtered = df_all[df_all['Pobocka_ID'] == lokalita_id].copy()
     return df_filtered
 
