@@ -53,33 +53,31 @@ BLOCKED_RESOURCES = {"image", "stylesheet", "font", "media"}
 # PLAYWRIGHT – INSTALACE BINÁREK (cloud kompatibilita)
 # ──────────────────────────────────────────────────────────────────────────────
 
-@st.cache_resource
-def _install_chromium() -> str | None:
-    """Spustí se jednou za lifetime deploymentu. Vrací chybový text nebo None."""
+def ensure_playwright_browsers() -> None:
+    """
+    Instaluje pouze Chromium binárku (bez systémových závislostí).
+    Systémové balíčky (libnss3 atd.) musí být v packages.txt – nelze je
+    instalovat za běhu bez root oprávnění na Streamlit Cloudu.
+    """
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
-            p.chromium.launch(headless=True).close()
-        return None
+            browser = p.chromium.launch(headless=True)
+            browser.close()
     except Exception:
+        st.toast("🔧 Instaluji Chromium binárku…", icon="⏳")
         result = subprocess.run(
             [sys.executable, "-m", "playwright", "install", "chromium"],
             capture_output=True, text=True
         )
         if result.returncode != 0:
-            return result.stderr[-500:]
-        return None
-
-
-def ensure_playwright_browsers() -> None:
-    """Wrapper – st.* volání jsou záměrně zde, mimo cachovanou funkci."""
-    err = _install_chromium()
-    if err:
-        st.error(
-            f"❌ Instalace Chromia selhala.\n\n**stderr:** `{err}`\n\n"
-            "Ujistěte se, že `packages.txt` obsahuje systémové závislosti."
-        )
-        st.stop()
+            st.error(
+                f"❌ Instalace Chromia selhala.\n\n"
+                f"**stderr:** `{result.stderr[-500:]}`\n\n"
+                "Ujistěte se, že `packages.txt` obsahuje systémové závislosti "
+                "a je součástí repozitáře."
+            )
+            st.stop()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -108,52 +106,14 @@ async def _login(page, email: str, heslo: str) -> bool:
 
 
 async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
+    """Vrátí seznam URL detailů přednášek ze seznamu."""
     url = LIST_URL.replace("{{datum}}", datum).replace("{{lokalita}}", str(lokalita))
-    print(f"[DEBUG] 🔍 Navigace na: {url}")
-
     try:
-        # "load" počká na DOM + CSS + vykonání JavaScriptu
-        await page.goto(url, wait_until="load", timeout=90_000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
     except PlaywrightTimeout:
-        try:
-            await page.goto(url, wait_until="load", timeout=60_000)
-        except PlaywrightTimeout:
-            return []
+        return []
 
-    # 1️⃣ Počkej, než se tabulka fyzicky objeví v DOM
-    await page.wait_for_selector("#tab-terminy tbody tr", timeout=30_000)
-    initial_rows = await page.locator("#tab-terminy tbody tr").count()
-    print(f"[DEBUG] 📊 Počáteční řádky v tabulce: {initial_rows}")
-
-    # 2️⃣ Počkej na dojetí AJAX filtru (síťový klid po načtení)
-    try:
-        await page.wait_for_load_state("networkidle", timeout=15_000)
-    except PlaywrightTimeout:
-        pass
-
-    # 3️⃣ Krátká pauza pro jistotu, že se DOM nestabilizuje
-    await page.wait_for_timeout(2000)
-
-    # 4️⃣ Ověř, zda se URL změnila (filtr často přidává query parametry)
-    current_url = page.url
-    if "vytez_lokalita" not in current_url:
-        print(f"[WARNING] ⚠️ Filtr se neaplikoval! Aktuální URL: {current_url}")
-        # Fallback: explicitní kliknutí na tlačítko filtru, pokud existuje
-        filter_btn = await page.query_selector('button[type="submit"], input[type="submit"], a[onclick*="prednasky_filtr"]')
-        if filter_btn:
-            print("[DEBUG] 🖱️ Klikám na tlačítko filtru...")
-            await filter_btn.click()
-            await page.wait_for_load_state("networkidle", timeout=15_000)
-            await page.wait_for_timeout(2000)
-        else:
-            print("[WARNING] Nenalezeno tlačítko filtru. Pokračuji s aktuálními daty.")
-
-    # 5️⃣ Znovu spočítej řádky po filtrování
-    final_rows = await page.locator("#tab-terminy tbody tr").count()
-    print(f"[DEBUG] ✅ Po aplikaci filtru řádků: {final_rows}")
-
-    # Extrahuj odkazy
-    links = await page.query_selector_all('#tab-terminy tbody a[href*="admin_prednaska.php?edit_id="]')
+    links = await page.query_selector_all('a[href*="admin_prednaska.php?edit_id="]')
     seen, result = set(), []
     for link in links:
         href = await link.get_attribute("href")
@@ -161,8 +121,6 @@ async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
             full = href if href.startswith("http") else f"{BASE_URL}/{href.lstrip('/')}"
             seen.add(href)
             result.append(full)
-    
-    print(f"[DEBUG] 📥 Extrahováno odkazů: {len(result)}")
     return result
 
 
@@ -204,26 +162,18 @@ async def _scrape_detail(page, url: str) -> dict | None:
     # Název/datum termínu z nadpisu nebo title
     nazev = await page.title()
 
+    # Termín ID a obsah stránky – potřebujeme před i po tabulce
     termin_match = re.search(r"edit_id=(\d+)", url)
     termin_id = termin_match.group(1) if termin_match else "?"
+    content = await page.content()
 
-    # Datum a čas – čteme z konkrétních elementů, ne z celého DOM
-    datum_str = None
-    for selector in ["h1", "h2", ".card-title", "title", ".page-header"]:
-        el = await page.query_selector(selector)
-        if not el:
-            continue
-        text = await el.inner_text()
-        dt_match = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})[^\d]{0,10}(\d{1,2}:\d{2})", text)
-        if dt_match:
-            datum_str = f"{dt_match.group(1)} {dt_match.group(2)}"
-            break
-        d_match = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})", text)
-        if d_match:
-            datum_str = d_match.group(1)
-            break
-    if not datum_str:
-        datum_str = f"#{termin_id}"
+    # Pokus o datum + čas → unikátní popisek osy X (např. "23.04.2026 08:00")
+    dt_match = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})[^\d]{0,10}(\d{1,2}:\d{2})", content)
+    if dt_match:
+        datum_str = f"{dt_match.group(1)} {dt_match.group(2)}"
+    else:
+        d_match = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})", content)
+        datum_str = d_match.group(1) if d_match else f"#{termin_id}"
 
     celkem = 0
     zaplaceno = 0
@@ -293,26 +243,12 @@ async def scrape_all(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
             st.warning("⚠️ Nenalezeny žádné termíny pro zvolené datum a pobočku.")
             return pd.DataFrame()
 
-        CONCURRENCY = 4
-        semaphore   = asyncio.Semaphore(CONCURRENCY)
-        progress    = st.progress(0, text="Načítám termíny…")
-        completed   = {"n": 0}
-
-        async def fetch_one(url: str) -> dict | None:
-            async with semaphore:
-                p = await ctx.new_page()
-                await p.route("**/*", _block_resource)
-                result = await _scrape_detail(p, url)
-                await p.close()
-                completed["n"] += 1
-                progress.progress(
-                    completed["n"] / len(detail_urls),
-                    text=f"Termín {completed['n']}/{len(detail_urls)}"
-                )
-                return result
-
-        raw = await asyncio.gather(*[fetch_one(u) for u in detail_urls])
-        results = [r for r in raw if r is not None]
+        progress = st.progress(0, text="Načítám termíny…")
+        for i, url in enumerate(detail_urls):
+            progress.progress((i + 1) / len(detail_urls), text=f"Termín {i+1}/{len(detail_urls)}")
+            data = await _scrape_detail(page, url)
+            if data:
+                results.append(data)
 
         progress.empty()
         await browser.close()
@@ -330,9 +266,7 @@ def run_scraper(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
 # ──────────────────────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def cached_data(lokalita: int) -> pd.DataFrame:
-    email = st.secrets["moje_jmeno"]
-    heslo = st.secrets["moje_heslo"]
+def cached_data(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
     return run_scraper(email, heslo, lokalita)
 
 
@@ -488,7 +422,7 @@ def main() -> None:
 
     # ── Načtení dat ──
     with st.spinner(f"Načítám data pro pobočku **{pobocka_nazev}**…"):
-        df = cached_data(lokalita_id)
+        df = cached_data(email, heslo, lokalita_id)
 
     if df.empty:
         st.info("ℹ️ Žádná data k zobrazení. Zkuste aktualizovat nebo zvolte jinou pobočku.")
@@ -523,10 +457,10 @@ def main() -> None:
     col3.metric(
         "💳 Celkem zaplaceno",
         int(df["Zaplaceno"].sum()),
-        delta=f"{int(df['Zaplaceno'].sum() / max(df['Žáků celkem'].sum(), 1) * 100)} % má alespoň něco uhrazeno",
+        delta=f"{int(df['Zaplaceno'].sum() / max(df['Žáků celkem'].sum(), 1) * 100)} %",
     )
     col3.caption(
-        f"{zap_czk:,} z {pred_czk:,} Kč — {zap_pct:.0f} %"
+        f"{zap_czk:,} z {pred_czk:,} Kč — {zap_pct:.0f} % má alespoň něco uhrazeno"
         .replace(",", "\u00a0")
     )
 
