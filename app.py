@@ -39,6 +39,14 @@ POBOCKY = {
 
 BASE_URL  = "https://nobe.moje-autoskola.cz"
 LOGIN_URL = f"{BASE_URL}/index.php"
+LIST_URL  = (
+    f"{BASE_URL}/admin_prednasky.php"
+    "?vytez_datum_od={{datum}}"
+    "&vytez_typ=545"
+    "&vytez_lokalita={{lokalita}}"
+    "&akce=prednasky_filtr"
+)
+
 BLOCKED_RESOURCES = {"image", "stylesheet", "font", "media"}
 
 
@@ -164,27 +172,38 @@ async def _login(page, email: str, heslo: str) -> bool:
 
 
 async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
+    url = LIST_URL.replace("{{datum}}", datum).replace("{{lokalita}}", str(lokalita))
+
+    loaded_ok = False
+
+    # ── Pokus 1: networkidle (ideální – JS filtr je dokončen) ──────────────
     try:
-        await page.goto(
-            f"{BASE_URL}/admin_prednasky.php",
-            wait_until="domcontentloaded",
-            timeout=60_000,
-        )
+        await page.goto(url, wait_until="networkidle", timeout=90_000)
+        loaded_ok = True
     except PlaywrightTimeout:
+        pass
+
+    # ── Pokus 2: domcontentloaded + explicitní čekání na JS filtrování ─────
+    if not loaded_ok:
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+            # Počkáme na přítomnost tabulky...
+            await page.wait_for_selector("#tab-terminy tbody tr", timeout=15_000)
+            # ...a navíc dáme JS filtru čas dokončit práci, než přečteme DOM.
+            # Bez tohoto delay se u Plzně načítaly termíny všech poboček.
+            await page.wait_for_timeout(3_000)
+            loaded_ok = True
+        except PlaywrightTimeout:
+            pass
+
+    if not loaded_ok:
         return []
 
-    try:
-        # Vyplň formulář stejně jako lidský uživatel
-        await page.fill('input[name="vytez_datum_od"]', datum)
-        await page.select_option('select[name="vytez_typ"]', "545")
-        await page.select_option('select[name="vytez_lokalita"]', str(lokalita))
-        await page.click('input[type="submit"]')
-        await page.wait_for_load_state("domcontentloaded", timeout=60_000)
-        # Počkáme až tabulka skutečně obsahuje řádky
-        await page.wait_for_selector("#tab-terminy tbody tr", timeout=20_000)
-    except PlaywrightTimeout:
+    # ── Ověření: stránka nás nepřesměrovala (vypršená session apod.) ───────
+    if str(lokalita) not in page.url:
         return []
 
+    # ── Čteme odkazy pouze z tabulky správné pobočky ───────────────────────
     links = await page.query_selector_all(
         '#tab-terminy tbody a[href*="admin_prednaska.php?edit_id="]'
     )
