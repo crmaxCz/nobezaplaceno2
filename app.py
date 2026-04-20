@@ -108,14 +108,30 @@ async def _login(page, email: str, heslo: str) -> bool:
 
 
 async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
-    """Vrátí seznam URL detailů přednášek ze seznamu."""
     url = LIST_URL.replace("{{datum}}", datum).replace("{{lokalita}}", str(lokalita))
+    
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        # "load" počká na DOM, CSS i na vykonání JavaScriptu
+        await page.goto(url, wait_until="load", timeout=90_000)
     except PlaywrightTimeout:
-        return []
+        try:
+            await page.goto(url, wait_until="load", timeout=60_000)
+        except PlaywrightTimeout:
+            return []
 
-    links = await page.query_selector_all('a[href*="admin_prednaska.php?edit_id="]')
+    # Počkej, než se tabulka s termíny fyzicky objeví v DOM
+    await page.wait_for_selector("#tab-terminy tbody tr", timeout=15_000)
+
+    # Důležité: Filtry často běží asynchronně po vykreslení tabulky.
+    # Počkej na případné AJAX volání nebo krátký klidový stav.
+    # Pokud stránka používá specifickou třídu pro "filtr hotov", nahraďte wait_for_timeout tímto:
+    # await page.wait_for_selector(".filter-complete", timeout=5000)
+    await page.wait_for_timeout(1000)
+
+    # Cílíme přímo na tabulku #tab-terminy – vyhneme se navigaci a sidebaru
+    links = await page.query_selector_all(
+        '#tab-terminy tbody a[href*="admin_prednaska.php?edit_id="]'
+    )
     seen, result = set(), []
     for link in links:
         href = await link.get_attribute("href")
@@ -124,6 +140,7 @@ async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
             seen.add(href)
             result.append(full)
     return result
+
 
 
 def _parse_castky(td_text: str) -> tuple[int, int]:
