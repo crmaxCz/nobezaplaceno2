@@ -84,26 +84,26 @@ def ensure_playwright_browsers() -> None:
 # SCRAPER (async Playwright)
 # ──────────────────────────────────────────────────────────────────────────────
 
+# ──────────────────────────────────────────────────────────────────────────────
+# SCRAPER
+# ──────────────────────────────────────────────────────────────────────────────
+
 async def _block_resource(route, request):
     if request.resource_type in BLOCKED_RESOURCES:
         await route.abort()
     else:
         await route.continue_()
 
-
 async def _login(page, email: str, heslo: str) -> bool:
-    """Přihlásí uživatele. Vrací True při úspěchu."""
     try:
         await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60_000)
         await page.fill('input[name="log_email"]', email)
         await page.fill('input[name="log_heslo"]', heslo)
         await page.click('button[type="submit"], input[type="submit"]')
         await page.wait_for_load_state("domcontentloaded", timeout=60_000)
-        # Ověření přihlášení – pokud jsme stále na přihlašovací stránce, selhalo
         return "log_email" not in (await page.content())
     except PlaywrightTimeout:
         return False
-
 
 async def _set_session_context(page, lokalita_id: int) -> None:
     """Explicitně přepne session na konkrétní pobočku dle struktury portalu."""
@@ -115,19 +115,15 @@ async def _set_session_context(page, lokalita_id: int) -> None:
     )
     print(f"[DEBUG] 🔄 Přepínám session na pobočku {lokalita_id}...")
     await page.goto(session_url, wait_until="load", timeout=30_000)
-    
-    # Počkej na aktualizaci headeru (změna třídy navbar_stredisko_XXX)
     await page.wait_for_timeout(1000)
     
-    # Ověření, že session byla nastavena
     header = await page.query_selector("li.dropdown.navbar_stredisko")
     if header:
         classes = await header.get_attribute("class")
         print(f"[DEBUG] ✅ Session nastavena. Header třída: {classes}")
 
-
 async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
-    # 1️⃣ NEJPRVE přepni session
+    # 1️⃣ NEJPRVE přepni session (řeší ignorování URL filtru)
     await _set_session_context(page, lokalita)
 
     # 2️⃣ Teď až načti filtrovanou URL
@@ -144,10 +140,13 @@ async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
 
     # 3️⃣ Počkej na vyrenderování tabulky + dojetí AJAX filtru
     await page.wait_for_selector("#tab-terminy tbody tr", timeout=30_000)
-    await page.wait_for_load_state("networkidle", timeout=15_000)
+    try:
+        await page.wait_for_load_state("networkidle", timeout=15_000)
+    except PlaywrightTimeout:
+        pass
     await page.wait_for_timeout(1500)
 
-    # 4️⃣ Extrahuj odkazy (stejné jako dříve)
+    # 4️⃣ Extrahuj odkazy
     links = await page.query_selector_all('#tab-terminy tbody a[href*="admin_prednaska.php?edit_id="]')
     seen, result = set(), []
     for link in links:
@@ -160,73 +159,44 @@ async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
     print(f"[DEBUG] 📥 Extrahováno odkazů: {len(result)}")
     return result
 
-
-def _parse_castky(td_text: str) -> tuple[int, int]:
-    """
-    Vrátí (zaplaceno_czk, predepsano_czk).
-    Formáty: '7 700,- Kč z 29 300,- Kč'  → (7700, 29300)
-             ' z 6 950,- Kč'              → (0, 6950)
-             '28 800,- Kč z 28 800,- Kč' → (28800, 28800)
-    """
-    normalized = (
-        td_text
-        .replace("\xa0", " ").replace("\u202f", " ")
-        .replace(",-", "").replace("Kč", "").replace("CZK", "")
-        .strip()
-    )
-    parts = re.split(r"\s+z\s+", normalized, maxsplit=1)
-    def to_int(s: str) -> int:
-        digits = re.sub(r"\D", "", s.strip())
-        return int(digits) if digits else 0
-    if len(parts) == 2:
-        return to_int(parts[0]), to_int(parts[1])
-    return 0, to_int(parts[0])
-
-
-def _parse_platba(td_text: str) -> bool:
-    """Zpětná kompatibilita – vrátí True pokud zaplaceno > 0."""
-    zap, _ = _parse_castky(td_text)
-    return zap > 0
-
-
 async def _scrape_detail(page, url: str) -> dict | None:
-    """Scrapuje detail jedné přednášky. Vrací dict nebo None při chybě."""
+    # ... (původní funkce zůstává beze změny, jen ji sem zkopíruj, pokud ji nahrazuješ celou sekci)
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
     except PlaywrightTimeout:
         return None
 
-    # Název/datum termínu z nadpisu nebo title
-    nazev = await page.title()
-
-    # Termín ID a obsah stránky – potřebujeme před i po tabulce
     termin_match = re.search(r"edit_id=(\d+)", url)
     termin_id = termin_match.group(1) if termin_match else "?"
-    content = await page.content()
 
-    # Pokus o datum + čas → unikátní popisek osy X (např. "23.04.2026 08:00")
-    dt_match = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})[^\d]{0,10}(\d{1,2}:\d{2})", content)
-    if dt_match:
-        datum_str = f"{dt_match.group(1)} {dt_match.group(2)}"
-    else:
-        d_match = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})", content)
-        datum_str = d_match.group(1) if d_match else f"#{termin_id}"
+    datum_str = None
+    for selector in ["h1", "h2", ".card-title", "title", ".page-header"]:
+        el = await page.query_selector(selector)
+        if not el:
+            continue
+        text = await el.inner_text()
+        dt = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})[^\d]{0,10}(\d{1,2}:\d{2})", text)
+        if dt:
+            datum_str = f"{dt.group(1)} {dt.group(2)}"
+            break
+        d = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})", text)
+        if d:
+            datum_str = d.group(1)
+            break
+    if not datum_str:
+        datum_str = f"#{termin_id}"
 
     celkem = 0
     zaplaceno = 0
     zaplaceno_czk  = 0
     predepsano_czk = 0
-    tbody = await page.query_selector(".table-striped tbody")
 
+    tbody = await page.query_selector(".table-striped tbody")
     if tbody:
         rows = await tbody.query_selector_all("tr")
         for i, row in enumerate(rows):
             text = (await row.inner_text()).strip()
-            if i == 0:       # záhlaví
-                continue
-            if "∑" in text:  # souhrnný řádek
-                continue
-            if not text:
+            if i == 0 or "∑" in text or not text:
                 continue
             celkem += 1
             tds = await row.query_selector_all("td")
@@ -237,17 +207,16 @@ async def _scrape_detail(page, url: str) -> dict | None:
                     zaplaceno += 1
                 zaplaceno_czk  += zap_czk
                 predepsano_czk += pred_czk
-    # tbody neexistuje → 0 žáků, termín se přesto zobrazí
 
     return {
-        "Termín":          datum_str,
-        "ID":              termin_id,
-        "Žáků celkem":     celkem,
-        "Zaplaceno":       zaplaceno,
-        "Nezaplaceno":     celkem - zaplaceno,
-        "Zaplaceno_Kč":    zaplaceno_czk,
-        "Předepsáno_Kč":   predepsano_czk,
-        "URL":             url,
+        "Termín":        datum_str,
+        "ID":            termin_id,
+        "Žáků celkem":   celkem,
+        "Zaplaceno":     zaplaceno,
+        "Nezaplaceno":   celkem - zaplaceno,
+        "Zaplaceno_Kč":  zaplaceno_czk,
+        "Předepsáno_Kč": predepsano_czk,
+        "URL":           url,
     }
 
 
