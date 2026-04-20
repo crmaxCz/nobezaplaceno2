@@ -219,54 +219,6 @@ async def _scrape_detail(page, url: str) -> dict | None:
         "URL":           url,
     }
 
-
-async def scrape_all(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
-    """Hlavní async funkce – přihlásí se, projde termíny, vrátí DataFrame."""
-    datum = date.today().strftime("%d.%m.%Y")   # CRM vyžaduje formát DD.MM.YYYY
-    results = []
-
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
-        ctx = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
-        )
-        page = await ctx.new_page()
-        await page.route("**/*", _block_resource)
-
-        logged_in = await _login(page, email, heslo)
-        if not logged_in:
-            await browser.close()
-            st.error("❌ Přihlášení selhalo – zkontrolujte přihlašovací údaje v st.secrets.")
-            return pd.DataFrame()
-
-        detail_urls = await _get_detail_urls(page, datum, lokalita)
-        if not detail_urls:
-            await browser.close()
-            st.warning("⚠️ Nenalezeny žádné termíny pro zvolené datum a pobočku.")
-            return pd.DataFrame()
-
-        progress = st.progress(0, text="Načítám termíny…")
-        for i, url in enumerate(detail_urls):
-            progress.progress((i + 1) / len(detail_urls), text=f"Termín {i+1}/{len(detail_urls)}")
-            data = await _scrape_detail(page, url)
-            if data:
-                results.append(data)
-
-        progress.empty()
-        await browser.close()
-
-    return pd.DataFrame(results) if results else pd.DataFrame()
-
-
-def run_scraper(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
-    """Synchronní wrapper – spustí async scraper v novém event loopu."""
-    return asyncio.run(scrape_all(email, heslo, lokalita))
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # CACHE – data se uchovají 30 minut nebo do manuálního promazání
 # ──────────────────────────────────────────────────────────────────────────────
