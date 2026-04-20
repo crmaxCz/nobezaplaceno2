@@ -174,9 +174,14 @@ async def _login(page, email: str, heslo: str) -> bool:
 async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
     url = LIST_URL.replace("{{datum}}", datum).replace("{{lokalita}}", str(lokalita))
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        await page.goto(url, wait_until="networkidle", timeout=90_000)
     except PlaywrightTimeout:
-        return []
+        # Fallback – zkus alespoň domcontentloaded
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+            await page.wait_for_selector("#tab-terminy tbody tr", timeout=15_000)
+        except PlaywrightTimeout:
+            return []
 
     # Cílíme přímo na tabulku #tab-terminy – vyhneme se navigaci a sidebaru
     links = await page.query_selector_all(
