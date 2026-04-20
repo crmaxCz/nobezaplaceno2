@@ -105,15 +105,50 @@ async def _login(page, email: str, heslo: str) -> bool:
         return False
 
 
-async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
-    """Vrátí seznam URL detailů přednášek ze seznamu."""
-    url = LIST_URL.replace("{{datum}}", datum).replace("{{lokalita}}", str(lokalita))
-    try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-    except PlaywrightTimeout:
-        return []
+async def _set_session_context(page, lokalita_id: int) -> None:
+    """Explicitně přepne session na konkrétní pobočku dle struktury portalu."""
+    session_url = (
+        f"{BASE_URL}/admin_nastav_stredisko.php"
+        f"?form_data[session_stredisko]={lokalita_id}"
+        f"&akce=nastav_stredisko"
+        f"&form_data[referer]=%2Fadmin_prednasky.php"
+    )
+    print(f"[DEBUG] 🔄 Přepínám session na pobočku {lokalita_id}...")
+    await page.goto(session_url, wait_until="load", timeout=30_000)
+    
+    # Počkej na aktualizaci headeru (změna třídy navbar_stredisko_XXX)
+    await page.wait_for_timeout(1000)
+    
+    # Ověření, že session byla nastavena
+    header = await page.query_selector("li.dropdown.navbar_stredisko")
+    if header:
+        classes = await header.get_attribute("class")
+        print(f"[DEBUG] ✅ Session nastavena. Header třída: {classes}")
 
-    links = await page.query_selector_all('a[href*="admin_prednaska.php?edit_id="]')
+
+async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
+    # 1️⃣ NEJPRVE přepni session
+    await _set_session_context(page, lokalita)
+
+    # 2️⃣ Teď až načti filtrovanou URL
+    url = LIST_URL.replace("{{datum}}", datum).replace("{{lokalita}}", str(lokalita))
+    print(f"[DEBUG] 🔍 Navigace na: {url}")
+    
+    try:
+        await page.goto(url, wait_until="load", timeout=90_000)
+    except PlaywrightTimeout:
+        try:
+            await page.goto(url, wait_until="load", timeout=60_000)
+        except PlaywrightTimeout:
+            return []
+
+    # 3️⃣ Počkej na vyrenderování tabulky + dojetí AJAX filtru
+    await page.wait_for_selector("#tab-terminy tbody tr", timeout=30_000)
+    await page.wait_for_load_state("networkidle", timeout=15_000)
+    await page.wait_for_timeout(1500)
+
+    # 4️⃣ Extrahuj odkazy (stejné jako dříve)
+    links = await page.query_selector_all('#tab-terminy tbody a[href*="admin_prednaska.php?edit_id="]')
     seen, result = set(), []
     for link in links:
         href = await link.get_attribute("href")
@@ -121,6 +156,8 @@ async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
             full = href if href.startswith("http") else f"{BASE_URL}/{href.lstrip('/')}"
             seen.add(href)
             result.append(full)
+    
+    print(f"[DEBUG] 📥 Extrahováno odkazů: {len(result)}")
     return result
 
 
