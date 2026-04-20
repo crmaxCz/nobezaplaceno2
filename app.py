@@ -109,9 +109,10 @@ async def _login(page, email: str, heslo: str) -> bool:
 
 async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
     url = LIST_URL.replace("{{datum}}", datum).replace("{{lokalita}}", str(lokalita))
-    
+    print(f"[DEBUG] 🔍 Navigace na: {url}")
+
     try:
-        # "load" počká na DOM, CSS i na vykonání JavaScriptu
+        # "load" počká na DOM + CSS + vykonání JavaScriptu
         await page.goto(url, wait_until="load", timeout=90_000)
     except PlaywrightTimeout:
         try:
@@ -119,19 +120,40 @@ async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
         except PlaywrightTimeout:
             return []
 
-    # Počkej, než se tabulka s termíny fyzicky objeví v DOM
-    await page.wait_for_selector("#tab-terminy tbody tr", timeout=15_000)
+    # 1️⃣ Počkej, než se tabulka fyzicky objeví v DOM
+    await page.wait_for_selector("#tab-terminy tbody tr", timeout=30_000)
+    initial_rows = await page.locator("#tab-terminy tbody tr").count()
+    print(f"[DEBUG] 📊 Počáteční řádky v tabulce: {initial_rows}")
 
-    # Důležité: Filtry často běží asynchronně po vykreslení tabulky.
-    # Počkej na případné AJAX volání nebo krátký klidový stav.
-    # Pokud stránka používá specifickou třídu pro "filtr hotov", nahraďte wait_for_timeout tímto:
-    # await page.wait_for_selector(".filter-complete", timeout=5000)
-    await page.wait_for_timeout(1000)
+    # 2️⃣ Počkej na dojetí AJAX filtru (síťový klid po načtení)
+    try:
+        await page.wait_for_load_state("networkidle", timeout=15_000)
+    except PlaywrightTimeout:
+        pass
 
-    # Cílíme přímo na tabulku #tab-terminy – vyhneme se navigaci a sidebaru
-    links = await page.query_selector_all(
-        '#tab-terminy tbody a[href*="admin_prednaska.php?edit_id="]'
-    )
+    # 3️⃣ Krátká pauza pro jistotu, že se DOM nestabilizuje
+    await page.wait_for_timeout(2000)
+
+    # 4️⃣ Ověř, zda se URL změnila (filtr často přidává query parametry)
+    current_url = page.url
+    if "vytez_lokalita" not in current_url:
+        print(f"[WARNING] ⚠️ Filtr se neaplikoval! Aktuální URL: {current_url}")
+        # Fallback: explicitní kliknutí na tlačítko filtru, pokud existuje
+        filter_btn = await page.query_selector('button[type="submit"], input[type="submit"], a[onclick*="prednasky_filtr"]')
+        if filter_btn:
+            print("[DEBUG] 🖱️ Klikám na tlačítko filtru...")
+            await filter_btn.click()
+            await page.wait_for_load_state("networkidle", timeout=15_000)
+            await page.wait_for_timeout(2000)
+        else:
+            print("[WARNING] Nenalezeno tlačítko filtru. Pokračuji s aktuálními daty.")
+
+    # 5️⃣ Znovu spočítej řádky po filtrování
+    final_rows = await page.locator("#tab-terminy tbody tr").count()
+    print(f"[DEBUG] ✅ Po aplikaci filtru řádků: {final_rows}")
+
+    # Extrahuj odkazy
+    links = await page.query_selector_all('#tab-terminy tbody a[href*="admin_prednaska.php?edit_id="]')
     seen, result = set(), []
     for link in links:
         href = await link.get_attribute("href")
@@ -139,8 +161,9 @@ async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
             full = href if href.startswith("http") else f"{BASE_URL}/{href.lstrip('/')}"
             seen.add(href)
             result.append(full)
+    
+    print(f"[DEBUG] 📥 Extrahováno odkazů: {len(result)}")
     return result
-
 
 
 def _parse_castky(td_text: str) -> tuple[int, int]:
