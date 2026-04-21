@@ -40,7 +40,7 @@ POBOCKY = {
 BASE_URL  = "https://nobe.moje-autoskola.cz"
 LOGIN_URL = f"{BASE_URL}/index.php"
 LIST_URL  = (
-    f"{BASE_URL}/admin_prednasky.php"
+    f"{BASE_URL}/admin_nastav_stredisko.php?form_data[session_stredisko]=957&akce=nastav_stredisko&form_data[referer]=%2Fadmin_prednasky.php"
     "?vytez_datum_od={{datum}}"
     "&vytez_typ=545"
     "&vytez_lokalita={{lokalita}}"
@@ -169,48 +169,6 @@ async def _login(page, email: str, heslo: str) -> bool:
         return "log_email" not in (await page.content())
     except PlaywrightTimeout:
         return False
-
-
-async def scrape_all(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
-    datum   = date.today().strftime("%d.%m.%Y")
-    results = []
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
-        ctx = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
-        )
-        page = await ctx.new_page()
-        await page.route("**/*", _block_resource)
-        
-        if not await _login(page, email, heslo):
-            await browser.close()
-            return pd.DataFrame(columns=["_error_login"])
-
-        # 🟢 NOVÉ: Přepnutí session kontextu na Plzeň (268)
-        # Tím se do session/cookie zapíše session_stredisko=268
-        # a backend povolí dotazování na všechny pobočky.
-        await page.goto(
-            f"{BASE_URL}/admin_nastav_stredisko.php?form_data[session_stredisko]=268&akce=nastav_stredisko&form_data[referer]=%2Fadmin_prednasky.php",
-            wait_until="domcontentloaded",
-            timeout=30_000
-        )
-        
-        # Alternativně rychlejší cesta (pokud endpoint dělá redirect):
-        # await page.context.add_cookies([{
-        #     "name": "session_stredisko", "value": "268",
-        #     "domain": ".moje-autoskola.cz", "path": "/"
-        # }])
-
-        detail_urls = await _get_detail_urls(page, datum, lokalita)
-        if not detail_urls:
-            await browser.close()
-            return pd.DataFrame()
-            
-        # ... zbytek funkce zůstává bez změny ...
 
 
 async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
