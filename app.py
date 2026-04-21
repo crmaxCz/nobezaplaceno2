@@ -333,28 +333,40 @@ def run_scraper(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
 # CACHE & PREFETCH
 # ──────────────────────────────────────────────────────────────────────────────
 
-_cache_lock: threading.Lock = threading.Lock()
-_branch_cache: dict[int, tuple[float, pd.DataFrame]] = {}
+@st.cache_resource
+def _get_shared_cache() -> dict[int, tuple[float, pd.DataFrame]]:
+    return {}
+
+
+@st.cache_resource
+def _get_shared_lock() -> threading.Lock:
+    return threading.Lock()
 
 
 def _cache_get(lid: int) -> pd.DataFrame | None:
-    with _cache_lock:
-        if lid in _branch_cache:
-            ts, df = _branch_cache[lid]
+    cache = _get_shared_cache()
+    lock = _get_shared_lock()
+    with lock:
+        if lid in cache:
+            ts, df = cache[lid]
             if time.time() - ts < CACHE_TTL:
                 return df
-            del _branch_cache[lid]
+            del cache[lid]
     return None
 
 
 def _cache_set(lid: int, df: pd.DataFrame) -> None:
-    with _cache_lock:
-        _branch_cache[lid] = (time.time(), df)
+    cache = _get_shared_cache()
+    lock = _get_shared_lock()
+    with lock:
+        cache[lid] = (time.time(), df)
 
 
 def _cache_clear() -> None:
-    with _cache_lock:
-        _branch_cache.clear()
+    cache = _get_shared_cache()
+    lock = _get_shared_lock()
+    with lock:
+        cache.clear()
 
 
 def get_data(lokalita: int) -> pd.DataFrame:
