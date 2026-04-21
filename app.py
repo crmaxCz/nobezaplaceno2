@@ -9,6 +9,8 @@ import base64
 import re
 import subprocess
 import sys
+import threading
+import time
 from datetime import date
 from pathlib import Path
 from urllib.parse import quote
@@ -38,6 +40,8 @@ POBOCKY = {
     "Zlín":           400,
 }
 
+PRIORITY_POBOCKY = ("Praha", "Brno", "Ostrava", "Plzeň")
+
 BASE_URL      = "https://nobe.moje-autoskola.cz"
 LOGIN_URL     = f"{BASE_URL}/index.php"
 LIST_PATH_TPL = (
@@ -49,6 +53,7 @@ LIST_PATH_TPL = (
 )
 
 CONCURRENCY       = 6
+CACHE_TTL         = 1800  # 30 minut
 BLOCKED_RESOURCES = {"image", "stylesheet", "font", "media"}
 
 
@@ -324,11 +329,132 @@ def run_scraper(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
     return asyncio.run(scrape_all(email, heslo, lokalita))
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def cached_data(lokalita: int) -> pd.DataFrame:
+# ──────────────────────────────────────────────────────────────────────────────
+# CACHE & PREFETCH
+# ──────────────────────────────────────────────────────────────────────────────
+
+_cache_lock: threading.Lock = threading.Lock()
+_branch_cache: dict[int, tuple[float, pd.DataFrame]] = {}
+
+
+def _cache_get(lid: int) -> pd.DataFrame | None:
+    with _cache_lock:
+        if lid in _branch_cache:
+            ts, df = _branch_cache[lid]
+            if time.time() - ts < CACHE_TTL:
+                return df
+            del _branch_cache[lid]
+    return None
+
+
+def _cache_set(lid: int, df: pd.DataFrame) -> None:
+    with _cache_lock:
+        _branch_cache[lid] = (time.time(), df)
+
+
+def _cache_clear() -> None:
+    with _cache_lock:
+        _branch_cache.clear()
+
+
+def get_data(lokalita: int) -> pd.DataFrame:
+    """Vrátí data z cache nebo scrape on-demand."""
+    cached = _cache_get(lokalita)
+    if cached is not None:
+        return cached
     email = st.secrets["moje_jmeno"]
     heslo = st.secrets["moje_heslo"]
-    return run_scraper(email, heslo, lokalita)
+    df = run_scraper(email, heslo, lokalita)
+    if "_error_login" not in df.columns:
+        _cache_set(lokalita, df)
+    return df
+
+
+async def _prefetch_batch_impl(
+    email: str, heslo: str, lokalita_ids: list[int],
+) -> None:
+    """Scrape více poboček v JEDNÉ browser session a uloží do cache."""
+    datum = date.today().strftime("%d.%m.%Y")
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
+        ctx = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            )
+        )
+        page = await ctx.new_page()
+        await page.route("**/*", _block_resource)
+
+        if not await _login(page, email, heslo):
+            await browser.close()
+            return
+
+        # Středisko 957 – jednou pro celý batch
+        try:
+            await page.goto(
+                f"{BASE_URL}/admin_nastav_stredisko.php"
+                f"?form_data[session_stredisko]=957&akce=nastav_stredisko",
+                wait_until="domcontentloaded", timeout=60_000,
+            )
+        except PlaywrightTimeout:
+            pass
+
+        # Page pool sdílený mezi pobočkami
+        page_pool: asyncio.Queue = asyncio.Queue()
+        for _ in range(CONCURRENCY):
+            p = await ctx.new_page()
+            await p.route("**/*", _block_resource)
+            await page_pool.put(p)
+
+        for lid in lokalita_ids:
+            if _cache_get(lid) is not None:
+                continue
+
+            list_url = f"{BASE_URL}{LIST_PATH_TPL.format(datum=datum, lokalita=lid)}"
+            try:
+                await page.goto(list_url, wait_until="domcontentloaded", timeout=60_000)
+            except PlaywrightTimeout:
+                _cache_set(lid, pd.DataFrame())
+                continue
+
+            detail_urls = await _extract_detail_urls(page)
+            if not detail_urls:
+                _cache_set(lid, pd.DataFrame())
+                continue
+
+            async def _fetch(url: str) -> dict | None:
+                p = await page_pool.get()
+                try:
+                    return await _scrape_detail(p, url)
+                finally:
+                    await page_pool.put(p)
+
+            raw = await asyncio.gather(*[_fetch(u) for u in detail_urls])
+            results = [r for r in raw if r is not None]
+            _cache_set(lid, pd.DataFrame(results) if results else pd.DataFrame())
+
+        await browser.close()
+
+
+def _start_prefetch(exclude_lid: int) -> None:
+    """Spustí background prefetch pro priority pobočky (mimo aktuální)."""
+    if st.session_state.get("_prefetch_started"):
+        return
+    st.session_state["_prefetch_started"] = True
+
+    ids = [POBOCKY[n] for n in PRIORITY_POBOCKY if POBOCKY[n] != exclude_lid]
+    if not ids:
+        return
+
+    email = st.secrets["moje_jmeno"]
+    heslo = st.secrets["moje_heslo"]
+    threading.Thread(
+        target=lambda: asyncio.run(_prefetch_batch_impl(email, heslo, ids)),
+        daemon=True,
+    ).start()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -421,7 +547,8 @@ def main() -> None:
         lokalita_id = POBOCKY[pobocka_nazev]
         st.markdown("---")
         if st.button("🔄 Aktualizovat data", use_container_width=True, type="primary"):
-            st.cache_data.clear()
+            _cache_clear()
+            st.session_state.pop("_prefetch_started", None)
             st.rerun()
         st.markdown("---")
         st.caption(f"Dnešní datum: **{date.today().strftime('%d. %m. %Y')}**")
@@ -451,7 +578,7 @@ def main() -> None:
     ensure_playwright_browsers()
 
     # ── Data ──
-    df = cached_data(lokalita_id)
+    df = get_data(lokalita_id)
 
     # ── Vymaž loading screen ──
     loading_slot.empty()
@@ -498,6 +625,9 @@ def main() -> None:
         )
         st.markdown("---")
         render_table(df)
+
+    # ── Background prefetch priority poboček ──
+    _start_prefetch(exclude_lid=lokalita_id)
 
 
 if __name__ == "__main__":
