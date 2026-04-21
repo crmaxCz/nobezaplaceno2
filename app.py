@@ -37,10 +37,15 @@ POBOCKY = {
     "Zlín":           400,
 }
 
-BASE_URL  = "https://nobe.moje-autoskola.cz"
-LOGIN_URL = f"{BASE_URL}/index.php"
+BASE_URL      = "https://nobe.moje-autoskola.cz"
+LOGIN_URL     = f"{BASE_URL}/index.php"
+STREDISKO_URL = (
+    f"{BASE_URL}/admin_nastav_stredisko.php"
+    "?form_data[session_stredisko]=957"
+    "&akce=nastav_stredisko"
+)   # středisko 957 (Plzeň) zobrazuje VŠECHNY lokality v dropdownu
 LIST_URL  = (
-    f"{BASE_URL}/admin_nastav_stredisko.php?form_data[session_stredisko]=957&akce=nastav_stredisko&form_data[referer]=%2Fadmin_prednasky.php"
+    f"{BASE_URL}/admin_prednasky.php"
     "?vytez_datum_od={{datum}}"
     "&vytez_typ=545"
     "&vytez_lokalita={{lokalita}}"
@@ -267,6 +272,14 @@ async def scrape_all(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
         if not await _login(page, email, heslo):
             await browser.close()
             return pd.DataFrame(columns=["_error_login"])
+
+        # Nastaví session středisko na 957 (Plzeň) – pod tímto střediskem
+        # jsou v dropdownu lokalit viditelné VŠECHNY pobočky včetně Plzně.
+        # Bez tohoto kroku server ignoruje filtr pro lokalitu 268 (Plzeň).
+        try:
+            await page.goto(STREDISKO_URL, wait_until="domcontentloaded", timeout=60_000)
+        except PlaywrightTimeout:
+            pass  # pokračujeme i při timeoutu – středisko se možná nastavilo
 
         detail_urls = await _get_detail_urls(page, datum, lokalita)
         if not detail_urls:
