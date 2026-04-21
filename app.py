@@ -1,6 +1,6 @@
 """
-NOBE Statistiky – Monitorovací dashboard pro autoškolu (Global Scrape Variant)
-================================================================================
+NOBE Statistiky – Monitorovací dashboard pro autoškolu
+======================================================
 Streamlit + Playwright (headless Chromium) + Pandas
 """
 
@@ -39,12 +39,11 @@ POBOCKY = {
 
 BASE_URL  = "https://nobe.moje-autoskola.cz"
 LOGIN_URL = f"{BASE_URL}/index.php"
-# Poznámka: Vytez_lokalita je prázdné, abychom dostali VŠECHNY termíny (Global View)
 LIST_URL  = (
     f"{BASE_URL}/admin_prednasky.php"
     "?vytez_datum_od={{datum}}"
     "&vytez_typ=545"
-    "&vytez_lokalita="
+    "&vytez_lokalita={{lokalita}}"
     "&akce=prednasky_filtr"
 )
 
@@ -149,23 +148,8 @@ def _parse_platba(td_text: str) -> bool:
     return zap > 0
 
 
-def _get_branch_id_from_row_text(text: str) -> int | None:
-    """
-    Zkusí najít ID pobočky v textu řádku (např. 'Praha - Krakovská...').
-    Vrací None, pokud se nenačte nic.
-    """
-    if not text:
-        return None
-    
-    # Procházíme seznam poboček a hledáme jejich jméno v textu
-    for name, id_ in POBOCKY.items():
-        if name in text:
-            return id_
-    return None
-
-
 # ──────────────────────────────────────────────────────────────────────────────
-# SCRAPER – GLOBAL VARIANT (VARIANTA 1)
+# SCRAPER
 # ──────────────────────────────────────────────────────────────────────────────
 
 async def _block_resource(route, request):
@@ -173,6 +157,7 @@ async def _block_resource(route, request):
         await route.abort()
     else:
         await route.continue_()
+
 
 async def _login(page, email: str, heslo: str) -> bool:
     try:
@@ -185,26 +170,65 @@ async def _login(page, email: str, heslo: str) -> bool:
     except PlaywrightTimeout:
         return False
 
-async def _set_session_context(page, lokalita_id: int) -> None:
-    """
-    Explicitně přepne session na konkrétní pobočku.
-    Pro Variantu 1 (Plzeň view) použijeme ID 268, což podle tvého HTML
-    odpovídá pohledu, kde jsou vidět všechny pobočky.
-    """
-    session_url = (
-        f"{BASE_URL}/admin_nastav_stredisko.php"
-        f"?form_data[session_stredisko]={lokalita_id}"
-        f"&akce=nastav_stredisko"
-        f"&form_data[referer]=%2Fadmin_prednasky.php"
-    )
-    print(f"[DEBUG] 🔄 Přepínám session na pobočku {lokalita_id}...")
-    await page.goto(session_url, wait_until="load", timeout=30_000)
-    await page.wait_for_timeout(1000)
-    
-    header = await page.query_selector("li.dropdown.navbar_stredisko")
-    if header:
-        classes = await header.get_attribute("class")
-        print(f"[DEBUG] ✅ Session nastavena. Header třída: {classes}")
+
+async def scrape_all(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
+    datum   = date.today().strftime("%d.%m.%Y")
+    results = []
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
+        ctx = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            )
+        )
+        page = await ctx.new_page()
+        await page.route("**/*", _block_resource)
+        
+        if not await _login(page, email, heslo):
+            await browser.close()
+            return pd.DataFrame(columns=["_error_login"])
+
+        # 🟢 NOVÉ: Přepnutí session kontextu na Plzeň (268)
+        # Tím se do session/cookie zapíše session_stredisko=268
+        # a backend povolí dotazování na všechny pobočky.
+        await page.goto(
+            f"{BASE_URL}/admin_nastav_stredisko.php?form_data[session_stredisko]=268&akce=nastav_stredisko&form_data[referer]=%2Fadmin_prednasky.php",
+            wait_until="domcontentloaded",
+            timeout=30_000
+        )
+        
+        # Alternativně rychlejší cesta (pokud endpoint dělá redirect):
+        # await page.context.add_cookies([{
+        #     "name": "session_stredisko", "value": "268",
+        #     "domain": ".moje-autoskola.cz", "path": "/"
+        # }])
+
+        detail_urls = await _get_detail_urls(page, datum, lokalita)
+        if not detail_urls:
+            await browser.close()
+            return pd.DataFrame()
+            
+        # ... zbytek funkce zůstává bez změny ...
+
+
+async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
+    url = LIST_URL.replace("{{datum}}", datum).replace("{{lokalita}}", str(lokalita))
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+    except PlaywrightTimeout:
+        return []
+    links = await page.query_selector_all('a[href*="admin_prednaska.php?edit_id="]')
+    seen, result = set(), []
+    for link in links:
+        href = await link.get_attribute("href")
+        if href and href not in seen:
+            full = href if href.startswith("http") else f"{BASE_URL}/{href.lstrip('/')}"
+            seen.add(href)
+            result.append(full)
+    return result
+
 
 async def _scrape_detail(page, url: str) -> dict | None:
     try:
@@ -265,13 +289,11 @@ async def _scrape_detail(page, url: str) -> dict | None:
         "URL":           url,
     }
 
-async def scrape_all_global(email: str, heslo: str) -> pd.DataFrame:
-    """
-    Stáhne VŠECHNY termíny najednou z pohledu pobočky Plzeň (ID 268).
-    Poté přiřadí k každému termínu správné ID pobočky na základě textu řádku.
-    """
-    datum = date.today().strftime("%d.%m.%Y")
-    
+
+async def scrape_all(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
+    datum   = date.today().strftime("%d.%m.%Y")
+    results = []
+
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
         ctx = await browser.new_context(
@@ -288,108 +310,49 @@ async def scrape_all_global(email: str, heslo: str) -> pd.DataFrame:
             await browser.close()
             return pd.DataFrame(columns=["_error_login"])
 
-        # 1. Nastavíme session na Plzeň (podle Varianty 1)
-        await _set_session_context(page, 268)
+        detail_urls = await _get_detail_urls(page, datum, lokalita)
+        if not detail_urls:
+            await browser.close()
+            return pd.DataFrame()
 
-        # 2. Načteme VŠECHNY termíny (bez filtru lokalita)
-        url = LIST_URL.replace("{{datum}}", datum).replace("{{lokalita}}", "")
-        print(f"[DEBUG] 🔍 Navigace na: {url}")
-        
-        try:
-            await page.goto(url, wait_until="load", timeout=90_000)
-        except PlaywrightTimeout:
-            try:
-                await page.goto(url, wait_until="load", timeout=60_000)
-            except PlaywrightTimeout:
-                await browser.close()
-                return pd.DataFrame()
+        total       = len(detail_urls)
+        CONCURRENCY = 4
+        semaphore   = asyncio.Semaphore(CONCURRENCY)
+        completed   = {"n": 0}
 
-        # 3. Počkej na vyrenderování tabulky
-        await page.wait_for_selector("#tab-terminy tbody tr", timeout=30_000)
-        await page.wait_for_load_state("networkidle", timeout=15_000)
-        await page.wait_for_timeout(2000)
-
-        # 4. Extrahuj odkazy a texty řádků
-        rows = await page.query_selector_all('#tab-terminy tbody tr')
-        tasks = []
-        for row in rows:
-            link = await row.query_selector('a')
-            if link:
-                href = await link.get_attribute('href')
-                if href:
-                    full_url = BASE_URL + href if not href.startswith('http') else href
-                    row_text = await row.inner_text()
-                    tasks.append((full_url, row_text))
-
-        print(f"[DEBUG] 📥 Našel jsem {len(tasks)} termínů ke stažení.")
-
-        # 5. Paralelní scrape detailů
-        semaphore = asyncio.Semaphore(4)
-        results = []
-        completed = {"n": 0}
-
-        async def fetch_one(url: str, row_text: str) -> dict | None:
+        async def fetch_one(url: str) -> dict | None:
             async with semaphore:
                 p = await ctx.new_page()
                 await p.route("**/*", _block_resource)
-                
-                detail = await _scrape_detail(p, url)
+                result = await _scrape_detail(p, url)
                 await p.close()
-                
-                if detail:
-                    # Přiřadíme ID pobočky na základě textu řádku
-                    branch_id = _get_branch_id_from_row_text(row_text)
-                    detail['Pobocka_ID'] = branch_id
-                    detail['Pobocka_Nazev'] = POBOCKY.get(branch_id, "Neznámá")
-                    results.append(detail)
-                
                 completed["n"] += 1
-                return detail
+                return result
 
-        await asyncio.gather(*[fetch_one(u, t) for u, t in tasks])
+        raw     = await asyncio.gather(*[fetch_one(u) for u in detail_urls])
+        results = [r for r in raw if r is not None]
+
         await browser.close()
 
     return pd.DataFrame(results) if results else pd.DataFrame()
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# CACHE & UI
-# ──────────────────────────────────────────────────────────────────────────────
+def run_scraper(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
+    return asyncio.run(scrape_all(email, heslo, lokalita))
 
-# ──────────────────────────────────────────────────────────────────────────────
-# CACHE & UI
-# ──────────────────────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=1800, show_spinner=False)
-async def get_all_data() -> pd.DataFrame:
-    """Asynchronní cache pro globální scrape. Streamlit to umí nativně."""
+def cached_data(lokalita: int) -> pd.DataFrame:
     email = st.secrets["moje_jmeno"]
     heslo = st.secrets["moje_heslo"]
-    return await scrape_all_global(email, heslo)
+    return run_scraper(email, heslo, lokalita)
 
 
-def cached_data(lokalita_id: int) -> pd.DataFrame:
-    """Sync wrapper, který bezpečně spustí async cache a vrátí DataFrame."""
-    import asyncio
-    # Spustí async funkci v kontextu Streamlitu
-    df_all = asyncio.get_event_loop().run_until_complete(get_all_data())
-    
-    if "_error_login" in df_all.columns:
-        return df_all
-        
-    if df_all.empty:
-        return pd.DataFrame()
-        
-    # Filtrujeme data pro konkrétní pobočku
-    df_filtered = df_all[df_all['Pobocka_ID'] == lokalita_id].copy()
-    return df_filtered
-
+# ──────────────────────────────────────────────────────────────────────────────
+# TABULKA
+# ──────────────────────────────────────────────────────────────────────────────
 
 def render_table(df: pd.DataFrame) -> None:
-    if df.empty:
-        st.info("ℹ️ Žádná data k zobrazení.")
-        return
-
     rows = ""
     for _, r in df.iterrows():
         pct     = r["Zaplaceno"] / max(r["Žáků celkem"], 1) * 100
@@ -494,8 +457,11 @@ def main() -> None:
     loading_slot = st.empty()
     content_slot = st.empty()
 
+    # Okamžitě vymaž starý obsah předchozí pobočky
     content_slot.empty()
-    _show_zebra(loading_slot, "Stahuji globalní data z portálu (Pohled Plzeň)...")
+
+    # Zobraz zebru
+    _show_zebra(loading_slot, "Stahuji data, načítám termíny a počítám peníze...")
     st.session_state["_progress_slot"] = loading_slot
 
     # ── Playwright (tiše, cached) ──
