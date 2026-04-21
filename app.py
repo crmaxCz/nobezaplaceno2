@@ -202,48 +202,58 @@ async def _extract_detail_urls(page) -> list[str]:
     return result
 
 
-async def _scrape_detail(page, url: str) -> dict | None:
-    try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-    except PlaywrightTimeout:
-        return None
-
+def _parse_detail_html(html: str, url: str) -> dict:
+    """Synchronní parsing detailu z raw HTML (vyhýbá se async DOM queries pro vyšší rychlost)."""
     termin_match = re.search(r"edit_id=(\d+)", url)
     termin_id = termin_match.group(1) if termin_match else "?"
 
     datum_str = None
-    for selector in ["h1", "h2", ".card-title", "title", ".page-header"]:
-        el = await page.query_selector(selector)
-        if not el:
-            continue
-        text = await el.inner_text()
-        dt = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})[^\d]{0,10}(\d{1,2}:\d{2})", text)
+    # Hledáme datum v hlavičkách (h1, h2) nebo titulku
+    for tag in [r"<h1[^>]*>(.*?)</h1>", r"<h2[^>]*>(.*?)</h2>", r"<title[^>]*>(.*?)</title>"]:
+        m = re.search(tag, html, re.IGNORECASE | re.DOTALL)
+        if m:
+            text = re.sub(r"<[^>]+>", "", m.group(1))
+            dt = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})[^\d]{0,10}(\d{1,2}:\d{2})", text)
+            if dt:
+                datum_str = f"{dt.group(1)} {dt.group(2)}"
+                break
+            d = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})", text)
+            if d:
+                datum_str = d.group(1)
+                break
+    
+    if not datum_str:
+        # Fallback na regex z textového obsahu (prvních 5000 znaků)
+        body_text = re.sub(r"<[^>]+>", "", html[:5000])
+        dt = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})[^\d]{0,10}(\d{1,2}:\d{2})", body_text)
         if dt:
             datum_str = f"{dt.group(1)} {dt.group(2)}"
-            break
-        d = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})", text)
-        if d:
-            datum_str = d.group(1)
-            break
-    if not datum_str:
-        datum_str = f"#{termin_id}"
+        else:
+            d = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})", body_text)
+            datum_str = d.group(1) if d else f"#{termin_id}"
 
     celkem = 0
     zaplaceno = 0
     zaplaceno_czk  = 0
     predepsano_czk = 0
 
-    tbody = await page.query_selector(".table-striped tbody")
-    if tbody:
-        rows = await tbody.query_selector_all("tr")
-        for i, row in enumerate(rows):
-            text = (await row.inner_text()).strip()
+    # Hledání tabulky .table-striped a jejích řádků
+    table_match = re.search(r"<table[^>]*table-striped[^>]*>.*?<tbody[^>]*>(.*?)</tbody>", html, re.IGNORECASE | re.DOTALL)
+    if not table_match:
+        table_match = re.search(r"<table[^>]*table-striped[^>]*>(.*?)</table>", html, re.IGNORECASE | re.DOTALL)
+
+    if table_match:
+        tbody_html = table_match.group(1)
+        rows = re.findall(r"<tr[^>]*>(.*?)</tr>", tbody_html, re.IGNORECASE | re.DOTALL)
+        for i, row_html in enumerate(rows):
+            text = re.sub(r"<[^>]+>", "", row_html).strip()
             if i == 0 or "∑" in text or not text:
                 continue
+            
             celkem += 1
-            tds = await row.query_selector_all("td")
+            tds = re.findall(r"<td[^>]*>(.*?)</td>", row_html, re.IGNORECASE | re.DOTALL)
             if len(tds) >= 5:
-                platba_text = (await tds[4].inner_text()).strip()
+                platba_text = re.sub(r"<[^>]+>", "", tds[4]).strip()
                 zap_czk, pred_czk = _parse_castky(platba_text)
                 if zap_czk > 0:
                     zaplaceno += 1
@@ -260,6 +270,15 @@ async def _scrape_detail(page, url: str) -> dict | None:
         "Předepsáno_Kč": predepsano_czk,
         "URL":           url,
     }
+
+
+async def _scrape_detail(page, url: str) -> dict | None:
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+    except PlaywrightTimeout:
+        return None
+    html = await page.content()
+    return _parse_detail_html(html, url)
 
 
 async def scrape_all(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
