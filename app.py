@@ -47,6 +47,7 @@ LOGIN_URL     = f"{BASE_URL}/index.php"
 LIST_PATH_TPL = (
     "/admin_prednasky.php"
     "?vytez_datum_od={datum}"
+    "&vytez_datum_do={datum_do}"
     "&vytez_typ=545"
     "&vytez_lokalita={lokalita}"
     "&akce=prednasky_filtr"
@@ -178,9 +179,9 @@ async def _login(page, email: str, heslo: str) -> bool:
         return False
 
 
-def _build_stredisko_redirect_url(datum: str, lokalita: int) -> str:
+def _build_stredisko_redirect_url(datum: str, datum_do: str, lokalita: int) -> str:
     """Sestaví URL, která nastaví středisko 957 a redirectne na list page."""
-    referer = LIST_PATH_TPL.format(datum=datum, lokalita=lokalita)
+    referer = LIST_PATH_TPL.format(datum=datum, datum_do=datum_do, lokalita=lokalita)
     return (
         f"{BASE_URL}/admin_nastav_stredisko.php"
         f"?form_data[session_stredisko]=957"
@@ -286,6 +287,10 @@ async def _scrape_detail(ctx, url: str) -> dict | None:
 
 async def scrape_all(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
     datum = date.today().strftime("%d.%m.%Y")
+    
+    target = pd.Timestamp.today() + pd.DateOffset(months=3)
+    target += pd.Timedelta(days=6 - target.weekday())
+    datum_do = target.strftime("%d.%m.%Y")
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
@@ -304,7 +309,7 @@ async def scrape_all(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
             return pd.DataFrame(columns=["_error_login"])
 
         # Nastaví středisko 957 a rovnou redirectne na list page (1 navigace místo 2)
-        redirect_url = _build_stredisko_redirect_url(datum, lokalita)
+        redirect_url = _build_stredisko_redirect_url(datum, datum_do, lokalita)
         try:
             await page.goto(redirect_url, wait_until="domcontentloaded", timeout=60_000)
         except PlaywrightTimeout:
@@ -403,6 +408,11 @@ async def _prefetch_batch_impl(
 ) -> None:
     """Scrape více poboček v JEDNÉ browser session a uloží do cache."""
     datum = date.today().strftime("%d.%m.%Y")
+    
+    target = pd.Timestamp.today() + pd.DateOffset(months=3)
+    target += pd.Timedelta(days=6 - target.weekday())
+    datum_do = target.strftime("%d.%m.%Y")
+    
     semaphore = asyncio.Semaphore(10)
 
     async with async_playwright() as pw:
@@ -436,7 +446,7 @@ async def _prefetch_batch_impl(
                 if lid in cache_dict:
                     continue
 
-            list_url = f"{BASE_URL}{LIST_PATH_TPL.format(datum=datum, lokalita=lid)}"
+            list_url = f"{BASE_URL}{LIST_PATH_TPL.format(datum=datum, datum_do=datum_do, lokalita=lid)}"
             try:
                 await page.goto(list_url, wait_until="domcontentloaded", timeout=60_000)
             except PlaywrightTimeout:
@@ -585,7 +595,13 @@ def main() -> None:
 
     # ── Nadpis ──
     st.title(f"📊 Termíny – {pobocka_nazev}")
-    st.markdown(f"Zobrazeny budoucí termíny od **{date.today().strftime('%d. %m. %Y')}**")
+    
+    dnes_str = date.today().strftime('%d. %m. %Y')
+    target = pd.Timestamp.today() + pd.DateOffset(months=3)
+    target += pd.Timedelta(days=6 - target.weekday())
+    do_str = target.strftime('%d. %m. %Y')
+    
+    st.markdown(f"Zobrazeny budoucí termíny od **{dnes_str}** do **{do_str}**")
 
     st.markdown("""
         <style>
