@@ -272,13 +272,16 @@ def _parse_detail_html(html: str, url: str) -> dict:
     }
 
 
-async def _scrape_detail(page, url: str) -> dict | None:
+async def _scrape_detail(ctx, url: str) -> dict | None:
+    """Stáhne raw HTML přes API request (bez renderování stránky)."""
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-    except PlaywrightTimeout:
+        response = await ctx.request.get(url, timeout=60_000)
+        if response.status != 200:
+            return None
+        html = await response.text()
+        return _parse_detail_html(html, url)
+    except Exception:
         return None
-    html = await page.content()
-    return _parse_detail_html(html, url)
 
 
 async def scrape_all(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
@@ -322,19 +325,12 @@ async def scrape_all(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
             await browser.close()
             return pd.DataFrame()
 
-        # Page pool – předvytvoříme stránky a rotujeme přes asyncio.Queue
-        page_pool: asyncio.Queue = asyncio.Queue()
-        for _ in range(CONCURRENCY):
-            p = await ctx.new_page()
-            await p.route("**/*", _block_resource)
-            await page_pool.put(p)
+        # Použijeme Semaphore místo pomalého otevírání tabů (používáme ctx.request.get)
+        semaphore = asyncio.Semaphore(10)  # Můžeme zvýšit, protože neděláme rendering
 
         async def fetch_one(url: str) -> dict | None:
-            p = await page_pool.get()
-            try:
-                return await _scrape_detail(p, url)
-            finally:
-                await page_pool.put(p)
+            async with semaphore:
+                return await _scrape_detail(ctx, url)
 
         raw = await asyncio.gather(*[fetch_one(u) for u in detail_urls])
         results = [r for r in raw if r is not None]
@@ -406,6 +402,7 @@ async def _prefetch_batch_impl(
 ) -> None:
     """Scrape více poboček v JEDNÉ browser session a uloží do cache."""
     datum = date.today().strftime("%d.%m.%Y")
+    semaphore = asyncio.Semaphore(10)
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
@@ -433,13 +430,6 @@ async def _prefetch_batch_impl(
         except PlaywrightTimeout:
             pass
 
-        # Page pool sdílený mezi pobočkami
-        page_pool: asyncio.Queue = asyncio.Queue()
-        for _ in range(CONCURRENCY):
-            p = await ctx.new_page()
-            await p.route("**/*", _block_resource)
-            await page_pool.put(p)
-
         for lid in lokalita_ids:
             if _cache_get(lid) is not None:
                 continue
@@ -457,11 +447,8 @@ async def _prefetch_batch_impl(
                 continue
 
             async def _fetch(url: str) -> dict | None:
-                p = await page_pool.get()
-                try:
-                    return await _scrape_detail(p, url)
-                finally:
-                    await page_pool.put(p)
+                async with semaphore:
+                    return await _scrape_detail(ctx, url)
 
             raw = await asyncio.gather(*[_fetch(u) for u in detail_urls])
             results = [r for r in raw if r is not None]
