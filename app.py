@@ -11,6 +11,7 @@ import subprocess
 import sys
 from datetime import date
 from pathlib import Path
+from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
@@ -39,19 +40,15 @@ POBOCKY = {
 
 BASE_URL      = "https://nobe.moje-autoskola.cz"
 LOGIN_URL     = f"{BASE_URL}/index.php"
-STREDISKO_URL = (
-    f"{BASE_URL}/admin_nastav_stredisko.php"
-    "?form_data[session_stredisko]=957"
-    "&akce=nastav_stredisko"
-)   # středisko 957 (Plzeň) zobrazuje VŠECHNY lokality v dropdownu
-LIST_URL  = (
-    f"{BASE_URL}/admin_prednasky.php"
-    "?vytez_datum_od={{datum}}"
+LIST_PATH_TPL = (
+    "/admin_prednasky.php"
+    "?vytez_datum_od={datum}"
     "&vytez_typ=545"
-    "&vytez_lokalita={{lokalita}}"
+    "&vytez_lokalita={lokalita}"
     "&akce=prednasky_filtr"
 )
 
+CONCURRENCY       = 6
 BLOCKED_RESOURCES = {"image", "stylesheet", "font", "media"}
 
 
@@ -176,12 +173,19 @@ async def _login(page, email: str, heslo: str) -> bool:
         return False
 
 
-async def _get_detail_urls(page, datum: str, lokalita: int) -> list[str]:
-    url = LIST_URL.replace("{{datum}}", datum).replace("{{lokalita}}", str(lokalita))
-    try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-    except PlaywrightTimeout:
-        return []
+def _build_stredisko_redirect_url(datum: str, lokalita: int) -> str:
+    """Sestaví URL, která nastaví středisko 957 a redirectne na list page."""
+    referer = LIST_PATH_TPL.format(datum=datum, lokalita=lokalita)
+    return (
+        f"{BASE_URL}/admin_nastav_stredisko.php"
+        f"?form_data[session_stredisko]=957"
+        f"&akce=nastav_stredisko"
+        f"&form_data[referer]={quote(referer, safe='')}"
+    )
+
+
+async def _extract_detail_urls(page) -> list[str]:
+    """Extrahuje detail URL z aktuálně načtené stránky (bez navigace)."""
     links = await page.query_selector_all('a[href*="admin_prednaska.php?edit_id="]')
     seen, result = set(), []
     for link in links:
@@ -254,8 +258,7 @@ async def _scrape_detail(page, url: str) -> dict | None:
 
 
 async def scrape_all(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
-    datum   = date.today().strftime("%d.%m.%Y")
-    results = []
+    datum = date.today().strftime("%d.%m.%Y")
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
@@ -273,34 +276,43 @@ async def scrape_all(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
             await browser.close()
             return pd.DataFrame(columns=["_error_login"])
 
-        # Nastaví session středisko na 957 (Plzeň) – pod tímto střediskem
-        # jsou v dropdownu lokalit viditelné VŠECHNY pobočky včetně Plzně.
-        # Bez tohoto kroku server ignoruje filtr pro lokalitu 268 (Plzeň).
+        # Nastaví středisko 957 a rovnou redirectne na list page (1 navigace místo 2)
+        redirect_url = _build_stredisko_redirect_url(datum, lokalita)
         try:
-            await page.goto(STREDISKO_URL, wait_until="domcontentloaded", timeout=60_000)
+            await page.goto(redirect_url, wait_until="domcontentloaded", timeout=60_000)
         except PlaywrightTimeout:
-            pass  # pokračujeme i při timeoutu – středisko se možná nastavilo
+            await browser.close()
+            return pd.DataFrame()
 
-        detail_urls = await _get_detail_urls(page, datum, lokalita)
+        # Ověříme, že redirect dovedl na list page; jinak fallback
+        if "admin_prednasky" not in page.url:
+            fallback = f"{BASE_URL}{LIST_PATH_TPL.format(datum=datum, lokalita=lokalita)}"
+            try:
+                await page.goto(fallback, wait_until="domcontentloaded", timeout=60_000)
+            except PlaywrightTimeout:
+                await browser.close()
+                return pd.DataFrame()
+
+        detail_urls = await _extract_detail_urls(page)
         if not detail_urls:
             await browser.close()
             return pd.DataFrame()
 
-        total       = len(detail_urls)
-        CONCURRENCY = 4
-        semaphore   = asyncio.Semaphore(CONCURRENCY)
-        completed   = {"n": 0}
+        # Page pool – předvytvoříme stránky a rotujeme přes asyncio.Queue
+        page_pool: asyncio.Queue = asyncio.Queue()
+        for _ in range(CONCURRENCY):
+            p = await ctx.new_page()
+            await p.route("**/*", _block_resource)
+            await page_pool.put(p)
 
         async def fetch_one(url: str) -> dict | None:
-            async with semaphore:
-                p = await ctx.new_page()
-                await p.route("**/*", _block_resource)
-                result = await _scrape_detail(p, url)
-                await p.close()
-                completed["n"] += 1
-                return result
+            p = await page_pool.get()
+            try:
+                return await _scrape_detail(p, url)
+            finally:
+                await page_pool.put(p)
 
-        raw     = await asyncio.gather(*[fetch_one(u) for u in detail_urls])
+        raw = await asyncio.gather(*[fetch_one(u) for u in detail_urls])
         results = [r for r in raw if r is not None]
 
         await browser.close()
