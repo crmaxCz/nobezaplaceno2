@@ -399,6 +399,7 @@ def get_data(lokalita: int) -> pd.DataFrame:
 
 async def _prefetch_batch_impl(
     email: str, heslo: str, lokalita_ids: list[int],
+    cache_dict: dict, cache_lock: threading.Lock
 ) -> None:
     """Scrape více poboček v JEDNÉ browser session a uloží do cache."""
     datum = date.today().strftime("%d.%m.%Y")
@@ -431,19 +432,22 @@ async def _prefetch_batch_impl(
             pass
 
         for lid in lokalita_ids:
-            if _cache_get(lid) is not None:
-                continue
+            with cache_lock:
+                if lid in cache_dict:
+                    continue
 
             list_url = f"{BASE_URL}{LIST_PATH_TPL.format(datum=datum, lokalita=lid)}"
             try:
                 await page.goto(list_url, wait_until="domcontentloaded", timeout=60_000)
             except PlaywrightTimeout:
-                _cache_set(lid, pd.DataFrame())
+                with cache_lock:
+                    cache_dict[lid] = (time.time(), pd.DataFrame())
                 continue
 
             detail_urls = await _extract_detail_urls(page)
             if not detail_urls:
-                _cache_set(lid, pd.DataFrame())
+                with cache_lock:
+                    cache_dict[lid] = (time.time(), pd.DataFrame())
                 continue
 
             async def _fetch(url: str) -> dict | None:
@@ -452,7 +456,9 @@ async def _prefetch_batch_impl(
 
             raw = await asyncio.gather(*[_fetch(u) for u in detail_urls])
             results = [r for r in raw if r is not None]
-            _cache_set(lid, pd.DataFrame(results) if results else pd.DataFrame())
+            df_res = pd.DataFrame(results) if results else pd.DataFrame()
+            with cache_lock:
+                cache_dict[lid] = (time.time(), df_res)
 
         await browser.close()
 
@@ -469,8 +475,13 @@ def _start_prefetch(exclude_lid: int) -> None:
 
     email = st.secrets["moje_jmeno"]
     heslo = st.secrets["moje_heslo"]
+    
+    # Musíme vyzvednout cache objekty TADY v hlavním vlákně (Streamlit kontext)
+    c_dict = _get_shared_cache()
+    c_lock = _get_shared_lock()
+
     threading.Thread(
-        target=lambda: asyncio.run(_prefetch_batch_impl(email, heslo, ids)),
+        target=lambda: asyncio.run(_prefetch_batch_impl(email, heslo, ids, c_dict, c_lock)),
         daemon=True,
     ).start()
 
