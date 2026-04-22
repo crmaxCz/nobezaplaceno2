@@ -627,8 +627,8 @@ def main() -> None:
 
     st.markdown("""
         <style>
-        /* Přeměna kontejneru na horizontální flex row */
-        div.element-container:has(#filter-buttons) + div.element-container > div[data-testid="stVerticalBlock"] {
+        /* Přeměna kontejneru na horizontální flex row (nezávislé na vnitřní struktuře Streamlitu) */
+        div.element-container:has(#filter-buttons) + div.element-container div:has(> div.element-container) {
             display: flex !important;
             flex-direction: row !important;
             flex-wrap: wrap !important;
@@ -636,9 +636,10 @@ def main() -> None:
             margin-bottom: 1rem;
         }
         /* Ujistíme se, že obaly tlačítek se nebudou roztahovat */
-        div.element-container:has(#filter-buttons) + div.element-container > div[data-testid="stVerticalBlock"] > div.element-container {
+        div.element-container:has(#filter-buttons) + div.element-container div.element-container {
             width: fit-content !important;
             flex: 0 0 auto !important;
+            display: block !important;
         }
         /* Minimalistický vzhled tlačítek */
         div.element-container:has(#filter-buttons) + div.element-container button[kind="secondary"] {
