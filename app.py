@@ -654,13 +654,9 @@ def main() -> None:
         <div id="filter-row-anchor"></div>
     """, unsafe_allow_html=True)
 
-    col_text, col_b1, col_b2, col_b3, col_b4 = st.columns([1, 1, 1, 1, 1])
+    col_text, col_b1, col_b2, col_b3, col_b4, col_cancel = st.columns([1, 1, 1, 1, 1, 1])
     with col_text:
         st.markdown(f"Zobrazeny termíny od **{datum_str}** do **{do_str}**")
-        if st.session_state.filter_type != "default":
-            if st.button("❌ Zrušit filtr (zpět na default)"):
-                st.session_state.filter_type = "default"
-                st.rerun()
     with col_b1:
         if st.button("Poslední měsíc"):
             st.session_state.filter_type = "last_month"
@@ -677,6 +673,11 @@ def main() -> None:
         if st.button("Následující 3 měsíce"):
             st.session_state.filter_type = "next_3_months"
             st.rerun()
+    with col_cancel:
+        if st.session_state.filter_type != "default":
+            if st.button("❌ Zrušit filtr (zpět na default)"):
+                st.session_state.filter_type = "default"
+                st.rerun()
 
     st.markdown("""
         <style>
