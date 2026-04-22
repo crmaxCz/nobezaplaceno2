@@ -627,21 +627,21 @@ def main() -> None:
 
     st.markdown("""
         <style>
-        /* Zmenšení tlačítek filtrů na novém řádku a minimalistický vzhled */
-        div.element-container:has(#filter-row) + div.element-container div[data-testid="stHorizontalBlock"] {
+        /* Přeměna kontejneru na horizontální flex row */
+        div.element-container:has(#filter-buttons) + div.element-container > div[data-testid="stVerticalBlock"] {
+            display: flex !important;
+            flex-direction: row !important;
+            flex-wrap: wrap !important;
             gap: 8px !important;
             margin-bottom: 1rem;
-            justify-content: flex-start !important;
         }
-        div.element-container:has(#filter-row) + div.element-container div[data-testid="stHorizontalBlock"] > div {
+        /* Ujistíme se, že obaly tlačítek se nebudou roztahovat */
+        div.element-container:has(#filter-buttons) + div.element-container > div[data-testid="stVerticalBlock"] > div.element-container {
             width: fit-content !important;
-            min-width: fit-content !important;
-            max-width: fit-content !important;
             flex: 0 0 auto !important;
-            margin: 0 !important;
-            padding: 0 !important;
         }
-        div.element-container:has(#filter-row) + div.element-container button[kind="secondary"] {
+        /* Minimalistický vzhled tlačítek */
+        div.element-container:has(#filter-buttons) + div.element-container button[kind="secondary"] {
             background-color: transparent !important;
             border: 1px solid rgba(128, 128, 128, 0.4) !important;
             border-radius: 16px !important;
@@ -652,34 +652,30 @@ def main() -> None:
             min-height: 28px !important;
             box-shadow: none !important;
             transition: all 0.2s ease;
+            margin: 0 !important;
         }
-        div.element-container:has(#filter-row) + div.element-container button[kind="secondary"]:hover {
+        div.element-container:has(#filter-buttons) + div.element-container button[kind="secondary"]:hover {
             border-color: rgba(255, 255, 255, 0.9) !important;
             color: rgba(255, 255, 255, 0.9) !important;
             background-color: rgba(255, 255, 255, 0.05) !important;
         }
         </style>
-        <div id="filter-row"></div>
+        <div id="filter-buttons"></div>
     """, unsafe_allow_html=True)
 
-    col_b1, col_b2, col_b3, col_b4, col_cancel = st.columns(5)
-    with col_b1:
+    with st.container():
         if st.button("Poslední měsíc"):
             st.session_state.filter_type = "last_month"
             st.rerun()
-    with col_b2:
         if st.button("Poslední 3 měsíce"):
             st.session_state.filter_type = "last_3_months"
             st.rerun()
-    with col_b3:
         if st.button("Následující měsíc"):
             st.session_state.filter_type = "next_month"
             st.rerun()
-    with col_b4:
         if st.button("Následující 3 měsíce"):
             st.session_state.filter_type = "next_3_months"
             st.rerun()
-    with col_cancel:
         if st.session_state.filter_type != "default":
             if st.button("❌ Zrušit filtr"):
                 st.session_state.filter_type = "default"
