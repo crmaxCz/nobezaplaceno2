@@ -630,8 +630,6 @@ def main() -> None:
     _show_zebra(loading_slot, "Stahuji data, načítám termíny a počítám peníze...")
     st.session_state["_progress_slot"] = loading_slot
 
-    # ── Playwright (tiše, cached) ──
-    ensure_playwright_browsers()
 
     # ── Data ──
     df = get_data(lokalita_id, datum_str, do_str)
