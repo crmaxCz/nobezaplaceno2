@@ -631,7 +631,7 @@ def main() -> None:
         
     datum_str, do_str = get_date_range(st.session_state.filter_type)
 
-    col1, col2, col3 = st.columns([1.5, 3, 1], vertical_alignment="center")
+    col1, col2 = st.columns([1.5, 3.5], vertical_alignment="center")
 
     with col1:
         st.markdown(f"**Od {datum_str} do {do_str}**")
@@ -642,11 +642,11 @@ def main() -> None:
             "last_3_months": "Poslední 3 měs.",
             "next_month": "Následující měsíc",
             "next_3_months": "Následující 3 měs.",
+            "custom": "📅 Vlastní",
             "default": "Zrušit filtr"
         }
         
-        # If the user has picked custom dates, the segmented control will deselect (None)
-        default_val = st.session_state.filter_type if st.session_state.filter_type in options else None
+        default_val = st.session_state.filter_type if st.session_state.filter_type in options else "default"
         
         selection = st.segmented_control(
             "Rychlé filtry",
@@ -661,20 +661,19 @@ def main() -> None:
             st.session_state.filter_type = selection
             st.rerun()
             
-    with col3:
-        with st.popover("📅 Vlastní"):
-            selected_dates = st.date_input(
-                "Zvolte rozsah (od – do):",
-                value=(st.session_state.custom_start, st.session_state.custom_end),
-                format="DD.MM.YYYY"
-            )
-            if len(selected_dates) == 2:
-                start_date, end_date = selected_dates
-                if start_date != st.session_state.custom_start or end_date != st.session_state.custom_end:
-                    st.session_state.custom_start = start_date
-                    st.session_state.custom_end = end_date
-                    st.session_state.filter_type = "custom"
-                    st.rerun()
+    # Zobrazit date picker, pokud je vybrán "Vlastní" filtr
+    if st.session_state.filter_type == "custom":
+        selected_dates = st.date_input(
+            "Zvolte rozsah (od – do):",
+            value=(st.session_state.custom_start, st.session_state.custom_end),
+            format="DD.MM.YYYY"
+        )
+        if len(selected_dates) == 2:
+            start_date, end_date = selected_dates
+            if start_date != st.session_state.custom_start or end_date != st.session_state.custom_end:
+                st.session_state.custom_start = start_date
+                st.session_state.custom_end = end_date
+                st.rerun()
 
     st.markdown("""
         <style>
