@@ -623,46 +623,63 @@ def main() -> None:
     
     datum_str, do_str = get_date_range(st.session_state.filter_type)
     
+    st.markdown(f"Zobrazeny termíny od **{datum_str}** do **{do_str}**")
+
     st.markdown("""
         <style>
-        /* Zmenšení tlačítek filtrů o ~20% */
-        div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
-            padding: 0.2rem 0.5rem !important;
-            font-size: 0.85rem !important;
-            min-height: 30px !important;
-            height: 30px !important;
+        /* Zmenšení tlačítek filtrů na novém řádku a minimalistický vzhled */
+        div.element-container:has(#filter-row) + div.element-container div[data-testid="stHorizontalBlock"] {
+            gap: 0.5rem !important;
+            margin-bottom: 1rem;
         }
-        /* Vertikální zarovnání textu s tlačítky */
-        div[data-testid="stHorizontalBlock"] p {
-            margin-top: 5px !important;
-            margin-bottom: 0px !important;
+        div.element-container:has(#filter-row) + div.element-container div[data-testid="column"] {
+            width: auto !important;
+            flex: 0 1 auto !important;
+            min-width: 0 !important;
+        }
+        div.element-container:has(#filter-row) + div.element-container button[kind="secondary"] {
+            background-color: transparent !important;
+            border: 1px solid rgba(128, 128, 128, 0.4) !important;
+            border-radius: 16px !important;
+            padding: 0px 14px !important;
+            font-size: 12px !important;
+            color: rgba(255, 255, 255, 0.6) !important;
+            height: 28px !important;
+            min-height: 28px !important;
+            box-shadow: none !important;
+            transition: all 0.2s ease;
+        }
+        div.element-container:has(#filter-row) + div.element-container button[kind="secondary"]:hover {
+            border-color: rgba(255, 255, 255, 0.9) !important;
+            color: rgba(255, 255, 255, 0.9) !important;
+            background-color: rgba(255, 255, 255, 0.05) !important;
         }
         </style>
+        <div id="filter-row"></div>
     """, unsafe_allow_html=True)
 
-    col_text, col_b1, col_b2, col_b3, col_b4 = st.columns([2.5, 1, 1, 1, 1.2])
-    with col_text:
-        st.markdown(f"Zobrazeny termíny od **{datum_str}** do **{do_str}**")
-        if st.session_state.filter_type != "default":
-            if st.button("❌ Zrušit filtr (zpět na default)"):
-                st.session_state.filter_type = "default"
-                st.rerun()
+    col_b1, col_b2, col_b3, col_b4, col_cancel = st.columns(5)
     with col_b1:
-        if st.button("Poslední měsíc", use_container_width=True):
+        if st.button("Poslední měsíc"):
             st.session_state.filter_type = "last_month"
             st.rerun()
     with col_b2:
-        if st.button("Poslední 3 měsíce", use_container_width=True):
+        if st.button("Poslední 3 měsíce"):
             st.session_state.filter_type = "last_3_months"
             st.rerun()
     with col_b3:
-        if st.button("Následující měsíc", use_container_width=True):
+        if st.button("Následující měsíc"):
             st.session_state.filter_type = "next_month"
             st.rerun()
     with col_b4:
-        if st.button("Následující 3 měsíce", use_container_width=True):
+        if st.button("Následující 3 měsíce"):
             st.session_state.filter_type = "next_3_months"
             st.rerun()
+    with col_cancel:
+        if st.session_state.filter_type != "default":
+            if st.button("❌ Zrušit filtr"):
+                st.session_state.filter_type = "default"
+                st.rerun()
 
     st.markdown("""
         <style>
