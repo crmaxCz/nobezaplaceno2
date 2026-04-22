@@ -627,19 +627,27 @@ def main() -> None:
 
     st.markdown("""
         <style>
-        /* Přeměna kontejneru na horizontální flex row (nezávislé na vnitřní struktuře Streamlitu) */
+        /* Zrušení případného flexboxu na rodiči (čistý blokový kontext) */
         div.element-container:has(#filter-buttons) + div.element-container div:has(> div.element-container) {
-            display: flex !important;
-            flex-direction: row !important;
-            flex-wrap: wrap !important;
-            gap: 8px !important;
+            display: block !important;
             margin-bottom: 1rem;
         }
-        /* Ujistíme se, že obaly tlačítek se nebudou roztahovat */
+        /* Obaly tlačítek se budou chovat jako text na řádku (inline-block) */
         div.element-container:has(#filter-buttons) + div.element-container div.element-container {
-            width: fit-content !important;
-            flex: 0 0 auto !important;
-            display: block !important;
+            display: inline-block !important;
+            width: auto !important;
+            margin-right: 8px !important;
+            vertical-align: top !important;
+        }
+        /* Přepsání Streamlit hardcoded 100% šířky uvnitř tlačítek */
+        div.element-container:has(#filter-buttons) + div.element-container div[data-testid="stBaseButton-secondary"] {
+            width: auto !important;
+            display: inline-block !important;
+        }
+        /* Kompatibilita pro starší verze Streamlitu, které mohou používat třídu stButton */
+        div.element-container:has(#filter-buttons) + div.element-container div.stButton {
+            width: auto !important;
+            display: inline-block !important;
         }
         /* Minimalistický vzhled tlačítek */
         div.element-container:has(#filter-buttons) + div.element-container button[kind="secondary"] {
