@@ -631,59 +631,57 @@ def main() -> None:
         
     datum_str, do_str = get_date_range(st.session_state.filter_type)
 
-    st.markdown("""
-        <style>
-        /* Unified Header Bar CSS */
-        div.element-container:has(#header-bar) + div.element-container > div[data-testid="stVerticalBlock"] {
-            display: block !important;
-            margin-bottom: 1rem;
-            white-space: nowrap !important;
-        }
-        /* Make ALL direct element-containers inside the block behave as inline-block */
-        div.element-container:has(#header-bar) + div.element-container > div[data-testid="stVerticalBlock"] > div.element-container {
-            display: inline-block !important;
-            width: auto !important;
-            margin-right: 8px !important;
-            vertical-align: middle !important;
-        }
-        /* Style the markdown text */
-        div.element-container:has(#header-bar) + div.element-container > div[data-testid="stVerticalBlock"] > div.element-container p {
-            margin: 0 !important;
-            padding-right: 4px;
-            font-size: 15px;
-            line-height: 30px;
-        }
-        /* Prevent top-level stButton and popover wrappers from forcing 100% width */
-        div.element-container:has(#header-bar) + div.element-container > div[data-testid="stVerticalBlock"] > div.element-container div[data-testid="stBaseButton-secondary"],
-        div.element-container:has(#header-bar) + div.element-container > div[data-testid="stVerticalBlock"] > div.element-container div.stButton,
-        div.element-container:has(#header-bar) + div.element-container > div[data-testid="stVerticalBlock"] > div.element-container div[data-testid="stPopover"] {
-            width: auto !important;
-            display: inline-block !important;
-        }
-        /* Minimalist Button Styling (strictly applied to top-level buttons to protect popover content) */
-        div.element-container:has(#header-bar) + div.element-container > div[data-testid="stVerticalBlock"] > div.element-container button[kind="secondary"] {
-            background-color: transparent !important;
-            border: 1px solid rgba(128, 128, 128, 0.4) !important;
-            border-radius: 16px !important;
-            padding: 0px 14px !important;
-            font-size: 12px !important;
-            color: rgba(255, 255, 255, 0.6) !important;
-            height: 30px !important;
-            min-height: 30px !important;
-            box-shadow: none !important;
-            transition: all 0.2s ease;
-            margin: 0 !important;
-        }
-        div.element-container:has(#header-bar) + div.element-container > div[data-testid="stVerticalBlock"] > div.element-container button[kind="secondary"]:hover {
-            border-color: rgba(255, 255, 255, 0.9) !important;
-            color: rgba(255, 255, 255, 0.9) !important;
-            background-color: rgba(255, 255, 255, 0.05) !important;
-        }
-        </style>
-        <div id="header-bar"></div>
-    """, unsafe_allow_html=True)
-
     with st.container():
+        st.markdown("""
+            <style>
+            /* Floating layout for the toolbar elements */
+            div.element-container:has(#toolbar-start) ~ div.element-container {
+                float: left !important;
+                clear: none !important;
+                width: auto !important;
+                margin-right: 8px !important;
+                margin-bottom: 12px !important;
+            }
+
+            /* Prevent Streamlit inner divs from stretching to 100% */
+            div.element-container:has(#toolbar-start) ~ div.element-container div[data-testid="stBaseButton-secondary"],
+            div.element-container:has(#toolbar-start) ~ div.element-container div.stButton,
+            div.element-container:has(#toolbar-start) ~ div.element-container div[data-testid="stPopover"] {
+                width: auto !important;
+                display: inline-block !important;
+            }
+
+            /* Style the text element to align with the buttons vertically */
+            div.element-container:has(#toolbar-start) ~ div.element-container p {
+                margin: 0 !important;
+                padding-right: 4px !important;
+                font-size: 15px !important;
+                line-height: 30px !important;
+            }
+
+            /* Minimalist Pill Button Styling */
+            div.element-container:has(#toolbar-start) ~ div.element-container button[kind="secondary"] {
+                background-color: transparent !important;
+                border: 1px solid rgba(128, 128, 128, 0.4) !important;
+                border-radius: 16px !important;
+                padding: 0px 14px !important;
+                font-size: 12px !important;
+                color: rgba(255, 255, 255, 0.6) !important;
+                height: 30px !important;
+                min-height: 30px !important;
+                box-shadow: none !important;
+                transition: all 0.2s ease !important;
+                margin: 0 !important;
+            }
+            div.element-container:has(#toolbar-start) ~ div.element-container button[kind="secondary"]:hover {
+                border-color: rgba(255, 255, 255, 0.9) !important;
+                color: rgba(255, 255, 255, 0.9) !important;
+                background-color: rgba(255, 255, 255, 0.05) !important;
+            }
+            </style>
+            <div id="toolbar-start"></div>
+        """, unsafe_allow_html=True)
+
         st.markdown(f"Zobrazeny termíny od **{datum_str}** do **{do_str}**")
         
         if st.button("Poslední měsíc"):
@@ -717,6 +715,9 @@ def main() -> None:
             if st.button("❌ Zrušit filtr"):
                 st.session_state.filter_type = "default"
                 st.rerun()
+                
+        # Clear the float so the container wraps its children correctly
+        st.markdown('<div style="clear: both;"></div>', unsafe_allow_html=True)
 
     st.markdown("""
         <style>
