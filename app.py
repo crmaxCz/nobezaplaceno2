@@ -623,6 +623,23 @@ def main() -> None:
     
     datum_str, do_str = get_date_range(st.session_state.filter_type)
     
+    st.markdown("""
+        <style>
+        /* Zmenšení tlačítek filtrů o ~20% */
+        div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
+            padding: 0.2rem 0.5rem !important;
+            font-size: 0.85rem !important;
+            min-height: 30px !important;
+            height: 30px !important;
+        }
+        /* Vertikální zarovnání textu s tlačítky */
+        div[data-testid="stHorizontalBlock"] p {
+            margin-top: 5px !important;
+            margin-bottom: 0px !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
     col_text, col_b1, col_b2, col_b3, col_b4 = st.columns([2.5, 1, 1, 1, 1.2])
     with col_text:
         st.markdown(f"Zobrazeny termíny od **{datum_str}** do **{do_str}**")
