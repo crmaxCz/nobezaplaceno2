@@ -570,6 +570,8 @@ def get_date_range(filter_type: str) -> tuple[str, str]:
         first_day_next_month = today.replace(day=1) + pd.DateOffset(months=1)
         last_day_3_months_ahead = (first_day_next_month + pd.DateOffset(months=3)) - pd.Timedelta(days=1)
         return first_day_next_month.strftime('%d.%m.%Y'), last_day_3_months_ahead.strftime('%d.%m.%Y')
+    elif filter_type == "custom":
+        return st.session_state.custom_start.strftime('%d.%m.%Y'), st.session_state.custom_end.strftime('%d.%m.%Y')
     else:
         # default
         datum = today.strftime("%d.%m.%Y")
@@ -621,48 +623,100 @@ def main() -> None:
     # ── Nadpis ──
     st.title(f"📊 Termíny – {pobocka_nazev}")
     
+    # Inicializace vlastního rozsahu
+    if "custom_start" not in st.session_state:
+        st.session_state.custom_start = pd.Timestamp.today().date()
+    if "custom_end" not in st.session_state:
+        st.session_state.custom_end = pd.Timestamp.today().date() + pd.Timedelta(days=30)
+        
     datum_str, do_str = get_date_range(st.session_state.filter_type)
-    
+
     st.markdown("""
         <style>
-        /* Zmenšení tlačítek filtrů o ~20% */
-        div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
-            padding: 0.2rem 0.5rem !important;
-            font-size: 0.85rem !important;
-            min-height: 30px !important;
-            height: 30px !important;
+        /* Unified Header Bar CSS */
+        div.element-container:has(#header-bar) + div.element-container > div[data-testid="stVerticalBlock"] {
+            display: block !important;
+            margin-bottom: 1rem;
+            white-space: nowrap !important;
         }
-        /* Vertikální zarovnání textu s tlačítky */
-        div[data-testid="stHorizontalBlock"] p {
-            margin-top: 5px !important;
-            margin-bottom: 0px !important;
+        /* Make ALL direct element-containers inside the block behave as inline-block */
+        div.element-container:has(#header-bar) + div.element-container > div[data-testid="stVerticalBlock"] > div.element-container {
+            display: inline-block !important;
+            width: auto !important;
+            margin-right: 8px !important;
+            vertical-align: middle !important;
+        }
+        /* Style the markdown text */
+        div.element-container:has(#header-bar) + div.element-container > div[data-testid="stVerticalBlock"] > div.element-container p {
+            margin: 0 !important;
+            padding-right: 4px;
+            font-size: 15px;
+            line-height: 30px;
+        }
+        /* Prevent top-level stButton and popover wrappers from forcing 100% width */
+        div.element-container:has(#header-bar) + div.element-container > div[data-testid="stVerticalBlock"] > div.element-container div[data-testid="stBaseButton-secondary"],
+        div.element-container:has(#header-bar) + div.element-container > div[data-testid="stVerticalBlock"] > div.element-container div.stButton,
+        div.element-container:has(#header-bar) + div.element-container > div[data-testid="stVerticalBlock"] > div.element-container div[data-testid="stPopover"] {
+            width: auto !important;
+            display: inline-block !important;
+        }
+        /* Minimalist Button Styling (strictly applied to top-level buttons to protect popover content) */
+        div.element-container:has(#header-bar) + div.element-container > div[data-testid="stVerticalBlock"] > div.element-container button[kind="secondary"] {
+            background-color: transparent !important;
+            border: 1px solid rgba(128, 128, 128, 0.4) !important;
+            border-radius: 16px !important;
+            padding: 0px 14px !important;
+            font-size: 12px !important;
+            color: rgba(255, 255, 255, 0.6) !important;
+            height: 30px !important;
+            min-height: 30px !important;
+            box-shadow: none !important;
+            transition: all 0.2s ease;
+            margin: 0 !important;
+        }
+        div.element-container:has(#header-bar) + div.element-container > div[data-testid="stVerticalBlock"] > div.element-container button[kind="secondary"]:hover {
+            border-color: rgba(255, 255, 255, 0.9) !important;
+            color: rgba(255, 255, 255, 0.9) !important;
+            background-color: rgba(255, 255, 255, 0.05) !important;
         }
         </style>
+        <div id="header-bar"></div>
     """, unsafe_allow_html=True)
 
-    col_text, col_b1, col_b2, col_b3, col_b4 = st.columns([2.5, 1, 1, 1, 1.2])
-    with col_text:
+    with st.container():
         st.markdown(f"Zobrazeny termíny od **{datum_str}** do **{do_str}**")
-        if st.session_state.filter_type != "default":
-            if st.button("❌ Zrušit filtr (zpět na default)"):
-                st.session_state.filter_type = "default"
-                st.rerun()
-    with col_b1:
-        if st.button("Poslední měsíc", use_container_width=True):
+        
+        if st.button("Poslední měsíc"):
             st.session_state.filter_type = "last_month"
             st.rerun()
-    with col_b2:
-        if st.button("Poslední 3 měsíce", use_container_width=True):
+        if st.button("Poslední 3 měsíce"):
             st.session_state.filter_type = "last_3_months"
             st.rerun()
-    with col_b3:
-        if st.button("Následující měsíc", use_container_width=True):
+        if st.button("Následující měsíc"):
             st.session_state.filter_type = "next_month"
             st.rerun()
-    with col_b4:
-        if st.button("Následující 3 měsíce", use_container_width=True):
+        if st.button("Následující 3 měsíce"):
             st.session_state.filter_type = "next_3_months"
             st.rerun()
+            
+        with st.popover("📅 Vlastní"):
+            selected_dates = st.date_input(
+                "Zvolte rozsah (od – do):",
+                value=(st.session_state.custom_start, st.session_state.custom_end),
+                format="DD.MM.YYYY"
+            )
+            if len(selected_dates) == 2:
+                start_date, end_date = selected_dates
+                if start_date != st.session_state.custom_start or end_date != st.session_state.custom_end:
+                    st.session_state.custom_start = start_date
+                    st.session_state.custom_end = end_date
+                    st.session_state.filter_type = "custom"
+                    st.rerun()
+                    
+        if st.session_state.filter_type != "default":
+            if st.button("❌ Zrušit filtr"):
+                st.session_state.filter_type = "default"
+                st.rerun()
 
     st.markdown("""
         <style>
