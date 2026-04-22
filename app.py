@@ -623,61 +623,29 @@ def main() -> None:
     
     datum_str, do_str = get_date_range(st.session_state.filter_type)
     
-    st.markdown("""
-        <style>
-        /* Target ONLY the filter row columns using an anchor */
-        div.element-container:has(#filter-row-anchor) + div.element-container div[data-testid="stHorizontalBlock"] {
-            gap: 0.4rem !important;
-            justify-content: flex-start !important;
-        }
-        div.element-container:has(#filter-row-anchor) + div.element-container div[data-testid="column"] {
-            width: auto !important;
-            flex: 0 1 auto !important;
-            min-width: 0 !important;
-        }
-        /* Make filter buttons compact and pill-shaped */
-        div.element-container:has(#filter-row-anchor) + div.element-container button[kind="secondary"] {
-            padding: 0px 12px !important;
-            font-size: 13px !important;
-            min-height: 28px !important;
-            height: 28px !important;
-            border-radius: 14px !important;
-        }
-        /* Vertically align the text with the smaller buttons */
-        div.element-container:has(#filter-row-anchor) + div.element-container p {
-            margin-bottom: 0;
-            line-height: 28px;
-            font-size: 15px;
-            padding-right: 0.2rem;
-        }
-        </style>
-        <div id="filter-row-anchor"></div>
-    """, unsafe_allow_html=True)
-
-    col_text, col_b1, col_b2, col_b3, col_b4, col_cancel = st.columns([1, 1, 1, 1, 1, 1])
+    col_text, col_b1, col_b2, col_b3, col_b4 = st.columns([2.5, 1, 1, 1, 1.2])
     with col_text:
         st.markdown(f"Zobrazeny termíny od **{datum_str}** do **{do_str}**")
-    with col_b1:
-        if st.button("Poslední měsíc"):
-            st.session_state.filter_type = "last_month"
-            st.rerun()
-    with col_b2:
-        if st.button("Poslední 3 měsíce"):
-            st.session_state.filter_type = "last_3_months"
-            st.rerun()
-    with col_b3:
-        if st.button("Následující měsíc"):
-            st.session_state.filter_type = "next_month"
-            st.rerun()
-    with col_b4:
-        if st.button("Následující 3 měsíce"):
-            st.session_state.filter_type = "next_3_months"
-            st.rerun()
-    with col_cancel:
         if st.session_state.filter_type != "default":
             if st.button("❌ Zrušit filtr (zpět na default)"):
                 st.session_state.filter_type = "default"
                 st.rerun()
+    with col_b1:
+        if st.button("Poslední měsíc", use_container_width=True):
+            st.session_state.filter_type = "last_month"
+            st.rerun()
+    with col_b2:
+        if st.button("Poslední 3 měsíce", use_container_width=True):
+            st.session_state.filter_type = "last_3_months"
+            st.rerun()
+    with col_b3:
+        if st.button("Následující měsíc", use_container_width=True):
+            st.session_state.filter_type = "next_month"
+            st.rerun()
+    with col_b4:
+        if st.button("Následující 3 měsíce", use_container_width=True):
+            st.session_state.filter_type = "next_3_months"
+            st.rerun()
 
     st.markdown("""
         <style>
