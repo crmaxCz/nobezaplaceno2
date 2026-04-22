@@ -629,13 +629,15 @@ def main() -> None:
         <style>
         /* Zmenšení tlačítek filtrů na novém řádku a minimalistický vzhled */
         div.element-container:has(#filter-row) + div.element-container div[data-testid="stHorizontalBlock"] {
-            gap: 0.5rem !important;
+            gap: 12px !important;
             margin-bottom: 1rem;
+            justify-content: flex-start !important;
         }
-        div.element-container:has(#filter-row) + div.element-container div[data-testid="column"] {
-            width: auto !important;
-            flex: 0 1 auto !important;
-            min-width: 0 !important;
+        div.element-container:has(#filter-row) + div.element-container div[data-testid="stHorizontalBlock"] > div {
+            width: fit-content !important;
+            min-width: fit-content !important;
+            max-width: fit-content !important;
+            flex: 0 0 auto !important;
         }
         div.element-container:has(#filter-row) + div.element-container button[kind="secondary"] {
             background-color: transparent !important;
