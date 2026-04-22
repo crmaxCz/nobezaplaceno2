@@ -141,7 +141,7 @@ async def _login(client: httpx.AsyncClient, email: str, heslo: str) -> bool:
     try:
         resp = await client.post(
             LOGIN_URL,
-            data={"log_email": email, "log_heslo": heslo},
+            data={"log_email": email, "log_heslo": heslo, "akce": "login"},
             timeout=10.0
         )
         return "log_email" not in resp.text
@@ -256,7 +256,8 @@ async def _scrape_detail(client: httpx.AsyncClient, url: str) -> dict | None:
 
 
 async def scrape_all(email: str, heslo: str, lokalita: int, datum: str, datum_do: str) -> pd.DataFrame:
-    async with httpx.AsyncClient(follow_redirects=True) as client:
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
+    async with httpx.AsyncClient(follow_redirects=True, headers=headers) as client:
         if not await _login(client, email, heslo):
             return pd.DataFrame(columns=["_error_login"])
 
@@ -357,8 +358,9 @@ async def _prefetch_batch_impl(
 ) -> None:
     """Scrape více poboček v JEDNÉ session a uloží do cache."""
     semaphore = asyncio.Semaphore(15)
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
 
-    async with httpx.AsyncClient(follow_redirects=True) as client:
+    async with httpx.AsyncClient(follow_redirects=True, headers=headers) as client:
         if not await _login(client, email, heslo):
             return
 
