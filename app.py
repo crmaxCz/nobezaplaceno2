@@ -623,6 +623,24 @@ def main() -> None:
     
     datum_str, do_str = get_date_range(st.session_state.filter_type)
     
+    st.markdown("""
+        <style>
+        /* Make filter buttons smaller and pill-shaped */
+        div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
+            padding: 0px 10px;
+            font-size: 13px;
+            min-height: 28px;
+            height: 28px;
+            border-radius: 14px;
+        }
+        /* Vertically align the text with the smaller buttons */
+        div[data-testid="stHorizontalBlock"] p {
+            margin-bottom: 0;
+            line-height: 28px;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
     col_text, col_b1, col_b2, col_b3, col_b4 = st.columns([2.5, 1, 1, 1, 1.2])
     with col_text:
         st.markdown(f"Zobrazeny termíny od **{datum_str}** do **{do_str}**")
