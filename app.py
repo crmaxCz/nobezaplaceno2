@@ -625,28 +625,36 @@ def main() -> None:
     
     st.markdown("""
         <style>
-        /* Make filter buttons smaller and pill-shaped */
-        div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
-            padding: 0px 6px !important;
-            font-size: 11px !important;
-            min-height: 24px !important;
-            height: 24px !important;
-            border-radius: 12px !important;
+        /* Target ONLY the filter row columns using an anchor */
+        div.element-container:has(#filter-row-anchor) + div.element-container div[data-testid="stHorizontalBlock"] {
+            gap: 0.4rem !important;
+            justify-content: flex-start !important;
+        }
+        div.element-container:has(#filter-row-anchor) + div.element-container div[data-testid="column"] {
+            width: auto !important;
+            flex: 0 1 auto !important;
+            min-width: 0 !important;
+        }
+        /* Make filter buttons compact and pill-shaped */
+        div.element-container:has(#filter-row-anchor) + div.element-container button[kind="secondary"] {
+            padding: 0px 12px !important;
+            font-size: 13px !important;
+            min-height: 28px !important;
+            height: 28px !important;
+            border-radius: 14px !important;
         }
         /* Vertically align the text with the smaller buttons */
-        div[data-testid="stHorizontalBlock"] p {
+        div.element-container:has(#filter-row-anchor) + div.element-container p {
             margin-bottom: 0;
-            line-height: 24px;
-            font-size: 14px;
-        }
-        /* Shrink gaps between columns */
-        div[data-testid="stHorizontalBlock"] {
-            gap: 0.25rem !important;
+            line-height: 28px;
+            font-size: 15px;
+            padding-right: 0.2rem;
         }
         </style>
+        <div id="filter-row-anchor"></div>
     """, unsafe_allow_html=True)
 
-    col_text, col_b1, col_b2, col_b3, col_b4 = st.columns([2.6, 0.8, 0.9, 0.9, 1.2], gap="small")
+    col_text, col_b1, col_b2, col_b3, col_b4 = st.columns([1, 1, 1, 1, 1])
     with col_text:
         st.markdown(f"Zobrazeny termíny od **{datum_str}** do **{do_str}**")
         if st.session_state.filter_type != "default":
@@ -654,19 +662,19 @@ def main() -> None:
                 st.session_state.filter_type = "default"
                 st.rerun()
     with col_b1:
-        if st.button("Poslední měsíc", use_container_width=True):
+        if st.button("Poslední měsíc"):
             st.session_state.filter_type = "last_month"
             st.rerun()
     with col_b2:
-        if st.button("Poslední 3 měsíce", use_container_width=True):
+        if st.button("Poslední 3 měsíce"):
             st.session_state.filter_type = "last_3_months"
             st.rerun()
     with col_b3:
-        if st.button("Následující měsíc", use_container_width=True):
+        if st.button("Následující měsíc"):
             st.session_state.filter_type = "next_month"
             st.rerun()
     with col_b4:
-        if st.button("Následující 3 měsíce", use_container_width=True):
+        if st.button("Následující 3 měsíce"):
             st.session_state.filter_type = "next_3_months"
             st.rerun()
 
