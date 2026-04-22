@@ -631,72 +631,37 @@ def main() -> None:
         
     datum_str, do_str = get_date_range(st.session_state.filter_type)
 
-    with st.container():
-        st.markdown("""
-            <style>
-            /* Floating layout for the toolbar elements */
-            div.element-container:has(#toolbar-start) ~ div.element-container {
-                float: left !important;
-                clear: none !important;
-                width: auto !important;
-                margin-right: 8px !important;
-                margin-bottom: 12px !important;
-            }
+    col1, col2, col3 = st.columns([1.5, 3, 1], vertical_alignment="center")
 
-            /* Prevent Streamlit inner divs from stretching to 100% */
-            div.element-container:has(#toolbar-start) ~ div.element-container div[data-testid="stBaseButton-secondary"],
-            div.element-container:has(#toolbar-start) ~ div.element-container div.stButton,
-            div.element-container:has(#toolbar-start) ~ div.element-container div[data-testid="stPopover"] {
-                width: auto !important;
-                display: inline-block !important;
-            }
-
-            /* Style the text element to align with the buttons vertically */
-            div.element-container:has(#toolbar-start) ~ div.element-container p {
-                margin: 0 !important;
-                padding-right: 4px !important;
-                font-size: 15px !important;
-                line-height: 30px !important;
-            }
-
-            /* Minimalist Pill Button Styling */
-            div.element-container:has(#toolbar-start) ~ div.element-container button[kind="secondary"] {
-                background-color: transparent !important;
-                border: 1px solid rgba(128, 128, 128, 0.4) !important;
-                border-radius: 16px !important;
-                padding: 0px 14px !important;
-                font-size: 12px !important;
-                color: rgba(255, 255, 255, 0.6) !important;
-                height: 30px !important;
-                min-height: 30px !important;
-                box-shadow: none !important;
-                transition: all 0.2s ease !important;
-                margin: 0 !important;
-            }
-            div.element-container:has(#toolbar-start) ~ div.element-container button[kind="secondary"]:hover {
-                border-color: rgba(255, 255, 255, 0.9) !important;
-                color: rgba(255, 255, 255, 0.9) !important;
-                background-color: rgba(255, 255, 255, 0.05) !important;
-            }
-            </style>
-            <div id="toolbar-start"></div>
-        """, unsafe_allow_html=True)
-
-        st.markdown(f"Zobrazeny termíny od **{datum_str}** do **{do_str}**")
+    with col1:
+        st.markdown(f"**Od {datum_str} do {do_str}**")
         
-        if st.button("Poslední měsíc"):
-            st.session_state.filter_type = "last_month"
-            st.rerun()
-        if st.button("Poslední 3 měsíce"):
-            st.session_state.filter_type = "last_3_months"
-            st.rerun()
-        if st.button("Následující měsíc"):
-            st.session_state.filter_type = "next_month"
-            st.rerun()
-        if st.button("Následující 3 měsíce"):
-            st.session_state.filter_type = "next_3_months"
+    with col2:
+        options = {
+            "last_month": "Poslední měsíc",
+            "last_3_months": "Poslední 3 měs.",
+            "next_month": "Následující měsíc",
+            "next_3_months": "Následující 3 měs.",
+            "default": "Zrušit filtr"
+        }
+        
+        # If the user has picked custom dates, the segmented control will deselect (None)
+        default_val = st.session_state.filter_type if st.session_state.filter_type in options else None
+        
+        selection = st.segmented_control(
+            "Rychlé filtry",
+            options=list(options.keys()),
+            format_func=lambda x: options[x],
+            default=default_val,
+            selection_mode="single",
+            label_visibility="collapsed"
+        )
+        
+        if selection and selection != st.session_state.filter_type:
+            st.session_state.filter_type = selection
             st.rerun()
             
+    with col3:
         with st.popover("📅 Vlastní"):
             selected_dates = st.date_input(
                 "Zvolte rozsah (od – do):",
@@ -710,14 +675,6 @@ def main() -> None:
                     st.session_state.custom_end = end_date
                     st.session_state.filter_type = "custom"
                     st.rerun()
-                    
-        if st.session_state.filter_type != "default":
-            if st.button("❌ Zrušit filtr"):
-                st.session_state.filter_type = "default"
-                st.rerun()
-                
-        # Clear the float so the container wraps its children correctly
-        st.markdown('<div style="clear: both;"></div>', unsafe_allow_html=True)
 
     st.markdown("""
         <style>
