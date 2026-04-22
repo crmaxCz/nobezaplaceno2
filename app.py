@@ -17,7 +17,8 @@ from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+import httpx
+from bs4 import BeautifulSoup
 
 # ──────────────────────────────────────────────────────────────────────────────
 # KONFIGURACE
@@ -98,31 +99,6 @@ def _show_zebra(placeholder, text: str, pct: int | None = None) -> None:
 # PLAYWRIGHT – INSTALACE BINÁREK
 # ──────────────────────────────────────────────────────────────────────────────
 
-@st.cache_resource
-def _install_chromium() -> str | None:
-    """Spustí se jednou za lifetime deploymentu. Vrací chybový text nebo None."""
-    try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            p.chromium.launch(headless=True).close()
-        return None
-    except Exception:
-        result = subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            capture_output=True, text=True
-        )
-        return result.stderr[-500:] if result.returncode != 0 else None
-
-
-def ensure_playwright_browsers() -> None:
-    err = _install_chromium()
-    if err:
-        st.error(
-            f"❌ Instalace Chromia selhala.\n\n**stderr:** `{err}`\n\n"
-            "Ujistěte se, že `packages.txt` obsahuje systémové závislosti."
-        )
-        st.stop()
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # PARSERY
@@ -160,22 +136,16 @@ def _parse_platba(td_text: str) -> bool:
 # SCRAPER
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def _block_resource(route, request):
-    if request.resource_type in BLOCKED_RESOURCES:
-        await route.abort()
-    else:
-        await route.continue_()
-
-
-async def _login(page, email: str, heslo: str) -> bool:
+async def _login(client: httpx.AsyncClient, email: str, heslo: str) -> bool:
+    """Přihlášení přes přímý POST požadavek na PHP backend."""
     try:
-        await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60_000)
-        await page.fill('input[name="log_email"]', email)
-        await page.fill('input[name="log_heslo"]', heslo)
-        await page.click('button[type="submit"], input[type="submit"]')
-        await page.wait_for_load_state("domcontentloaded", timeout=60_000)
-        return "log_email" not in (await page.content())
-    except PlaywrightTimeout:
+        resp = await client.post(
+            LOGIN_URL,
+            data={"log_email": email, "log_heslo": heslo},
+            timeout=10.0
+        )
+        return "log_email" not in resp.text
+    except Exception:
         return False
 
 
@@ -190,12 +160,13 @@ def _build_stredisko_redirect_url(datum: str, datum_do: str, lokalita: int) -> s
     )
 
 
-async def _extract_detail_urls(page) -> list[str]:
-    """Extrahuje detail URL z aktuálně načtené stránky (bez navigace)."""
-    links = await page.query_selector_all('a[href*="admin_prednaska.php?edit_id="]')
+def _extract_detail_urls(html: str) -> list[str]:
+    """Extrahuje detail URL ze staženého HTML."""
+    soup = BeautifulSoup(html, "lxml")
+    links = soup.select('a[href*="admin_prednaska.php?edit_id="]')
     seen, result = set(), []
     for link in links:
-        href = await link.get_attribute("href")
+        href = link.get("href")
         if href and href not in seen:
             full = href if href.startswith("http") else f"{BASE_URL}/{href.lstrip('/')}"
             seen.add(href)
@@ -273,68 +244,49 @@ def _parse_detail_html(html: str, url: str) -> dict:
     }
 
 
-async def _scrape_detail(ctx, url: str) -> dict | None:
-    """Stáhne raw HTML přes API request (bez renderování stránky)."""
+async def _scrape_detail(client: httpx.AsyncClient, url: str) -> dict | None:
+    """Stáhne raw HTML přes API request a naparsuje ho."""
     try:
-        response = await ctx.request.get(url, timeout=60_000)
-        if response.status != 200:
+        response = await client.get(url, timeout=15.0)
+        if response.status_code != 200:
             return None
-        html = await response.text()
-        return _parse_detail_html(html, url)
+        return _parse_detail_html(response.text, url)
     except Exception:
         return None
 
 
 async def scrape_all(email: str, heslo: str, lokalita: int, datum: str, datum_do: str) -> pd.DataFrame:
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
-        ctx = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
-        )
-        page = await ctx.new_page()
-        await page.route("**/*", _block_resource)
-
-        if not await _login(page, email, heslo):
-            await browser.close()
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        if not await _login(client, email, heslo):
             return pd.DataFrame(columns=["_error_login"])
 
-        # Nastaví středisko 957 a rovnou redirectne na list page (1 navigace místo 2)
+        # Nastaví středisko 957 a rovnou redirectne na list page
         redirect_url = _build_stredisko_redirect_url(datum, datum_do, lokalita)
         try:
-            await page.goto(redirect_url, wait_until="domcontentloaded", timeout=60_000)
-        except PlaywrightTimeout:
-            await browser.close()
+            resp = await client.get(redirect_url, timeout=15.0)
+        except Exception:
             return pd.DataFrame()
 
         # Ověříme, že redirect dovedl na list page; jinak fallback
-        if "admin_prednasky" not in page.url:
-            fallback = f"{BASE_URL}{LIST_PATH_TPL.format(datum=datum, lokalita=lokalita)}"
+        if "admin_prednasky" not in str(resp.url):
+            fallback = f"{BASE_URL}{LIST_PATH_TPL.format(datum=datum, datum_do=datum_do, lokalita=lokalita)}"
             try:
-                await page.goto(fallback, wait_until="domcontentloaded", timeout=60_000)
-            except PlaywrightTimeout:
-                await browser.close()
+                resp = await client.get(fallback, timeout=15.0)
+            except Exception:
                 return pd.DataFrame()
 
-        detail_urls = await _extract_detail_urls(page)
+        detail_urls = _extract_detail_urls(resp.text)
         if not detail_urls:
-            await browser.close()
             return pd.DataFrame()
 
-        # Použijeme Semaphore místo pomalého otevírání tabů (používáme ctx.request.get)
-        semaphore = asyncio.Semaphore(10)  # Můžeme zvýšit, protože neděláme rendering
+        semaphore = asyncio.Semaphore(15)  # Můžeme zvýšit, protože neděláme rendering
 
         async def fetch_one(url: str) -> dict | None:
             async with semaphore:
-                return await _scrape_detail(ctx, url)
+                return await _scrape_detail(client, url)
 
         raw = await asyncio.gather(*[fetch_one(u) for u in detail_urls])
         results = [r for r in raw if r is not None]
-
-        await browser.close()
 
     return pd.DataFrame(results) if results else pd.DataFrame()
 
@@ -403,33 +355,21 @@ async def _prefetch_batch_impl(
     cache_dict: dict, cache_lock: threading.Lock,
     datum: str, datum_do: str
 ) -> None:
-    """Scrape více poboček v JEDNÉ browser session a uloží do cache."""
-    semaphore = asyncio.Semaphore(10)
+    """Scrape více poboček v JEDNÉ session a uloží do cache."""
+    semaphore = asyncio.Semaphore(15)
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
-        ctx = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
-        )
-        page = await ctx.new_page()
-        await page.route("**/*", _block_resource)
-
-        if not await _login(page, email, heslo):
-            await browser.close()
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        if not await _login(client, email, heslo):
             return
 
         # Středisko 957 – jednou pro celý batch
         try:
-            await page.goto(
+            await client.get(
                 f"{BASE_URL}/admin_nastav_stredisko.php"
                 f"?form_data[session_stredisko]=957&akce=nastav_stredisko",
-                wait_until="domcontentloaded", timeout=60_000,
+                timeout=15.0
             )
-        except PlaywrightTimeout:
+        except Exception:
             pass
 
         for lid in lokalita_ids:
@@ -439,13 +379,13 @@ async def _prefetch_batch_impl(
 
             list_url = f"{BASE_URL}{LIST_PATH_TPL.format(datum=datum, datum_do=datum_do, lokalita=lid)}"
             try:
-                await page.goto(list_url, wait_until="domcontentloaded", timeout=60_000)
-            except PlaywrightTimeout:
+                resp = await client.get(list_url, timeout=15.0)
+            except Exception:
                 with cache_lock:
                     cache_dict[(lid, datum, datum_do)] = (time.time(), pd.DataFrame())
                 continue
 
-            detail_urls = await _extract_detail_urls(page)
+            detail_urls = _extract_detail_urls(resp.text)
             if not detail_urls:
                 with cache_lock:
                     cache_dict[(lid, datum, datum_do)] = (time.time(), pd.DataFrame())
@@ -453,7 +393,7 @@ async def _prefetch_batch_impl(
 
             async def _fetch(url: str) -> dict | None:
                 async with semaphore:
-                    return await _scrape_detail(ctx, url)
+                    return await _scrape_detail(client, url)
 
             raw = await asyncio.gather(*[_fetch(u) for u in detail_urls])
             results = [r for r in raw if r is not None]
@@ -461,8 +401,6 @@ async def _prefetch_batch_impl(
             key = (lid, datum, datum_do)
             with cache_lock:
                 cache_dict[key] = (time.time(), df_res)
-
-        await browser.close()
 
 
 def _start_prefetch(exclude_lid: int, datum: str, datum_do: str) -> None:
@@ -631,7 +569,7 @@ def main() -> None:
         
     datum_str, do_str = get_date_range(st.session_state.filter_type)
 
-    col1, col2 = st.columns([1.5, 3.5], vertical_alignment="center")
+    col1, col2, col3 = st.columns([1.5, 3, 1], vertical_alignment="center")
 
     with col1:
         st.markdown(f"**Od {datum_str} do {do_str}**")
@@ -642,11 +580,11 @@ def main() -> None:
             "last_3_months": "Poslední 3 měs.",
             "next_month": "Následující měsíc",
             "next_3_months": "Následující 3 měs.",
-            "custom": "📅 Vlastní",
             "default": "Zrušit filtr"
         }
         
-        default_val = st.session_state.filter_type if st.session_state.filter_type in options else "default"
+        # If the user has picked custom dates, the segmented control will deselect (None)
+        default_val = st.session_state.filter_type if st.session_state.filter_type in options else None
         
         selection = st.segmented_control(
             "Rychlé filtry",
@@ -661,19 +599,20 @@ def main() -> None:
             st.session_state.filter_type = selection
             st.rerun()
             
-    # Zobrazit date picker, pokud je vybrán "Vlastní" filtr
-    if st.session_state.filter_type == "custom":
-        selected_dates = st.date_input(
-            "Zvolte rozsah (od – do):",
-            value=(st.session_state.custom_start, st.session_state.custom_end),
-            format="DD.MM.YYYY"
-        )
-        if len(selected_dates) == 2:
-            start_date, end_date = selected_dates
-            if start_date != st.session_state.custom_start or end_date != st.session_state.custom_end:
-                st.session_state.custom_start = start_date
-                st.session_state.custom_end = end_date
-                st.rerun()
+    with col3:
+        with st.popover("📅 Vlastní"):
+            selected_dates = st.date_input(
+                "Zvolte rozsah (od – do):",
+                value=(st.session_state.custom_start, st.session_state.custom_end),
+                format="DD.MM.YYYY"
+            )
+            if len(selected_dates) == 2:
+                start_date, end_date = selected_dates
+                if start_date != st.session_state.custom_start or end_date != st.session_state.custom_end:
+                    st.session_state.custom_start = start_date
+                    st.session_state.custom_end = end_date
+                    st.session_state.filter_type = "custom"
+                    st.rerun()
 
     st.markdown("""
         <style>
