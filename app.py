@@ -285,13 +285,7 @@ async def _scrape_detail(ctx, url: str) -> dict | None:
         return None
 
 
-async def scrape_all(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
-    datum = date.today().strftime("%d.%m.%Y")
-    
-    target = pd.Timestamp.today() + pd.DateOffset(months=3)
-    target += pd.Timedelta(days=6 - target.weekday())
-    datum_do = target.strftime("%d.%m.%Y")
-
+async def scrape_all(email: str, heslo: str, lokalita: int, datum: str, datum_do: str) -> pd.DataFrame:
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
         ctx = await browser.new_context(
@@ -345,8 +339,8 @@ async def scrape_all(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
     return pd.DataFrame(results) if results else pd.DataFrame()
 
 
-def run_scraper(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
-    return asyncio.run(scrape_all(email, heslo, lokalita))
+def run_scraper(email: str, heslo: str, lokalita: int, datum: str, datum_do: str) -> pd.DataFrame:
+    return asyncio.run(scrape_all(email, heslo, lokalita, datum, datum_do))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -354,7 +348,7 @@ def run_scraper(email: str, heslo: str, lokalita: int) -> pd.DataFrame:
 # ──────────────────────────────────────────────────────────────────────────────
 
 @st.cache_resource
-def _get_shared_cache() -> dict[int, tuple[float, pd.DataFrame]]:
+def _get_shared_cache() -> dict[tuple[int, str, str], tuple[float, pd.DataFrame]]:
     return {}
 
 
@@ -363,23 +357,25 @@ def _get_shared_lock() -> threading.Lock:
     return threading.Lock()
 
 
-def _cache_get(lid: int) -> pd.DataFrame | None:
+def _cache_get(lid: int, datum: str, datum_do: str) -> pd.DataFrame | None:
     cache = _get_shared_cache()
     lock = _get_shared_lock()
+    key = (lid, datum, datum_do)
     with lock:
-        if lid in cache:
-            ts, df = cache[lid]
+        if key in cache:
+            ts, df = cache[key]
             if time.time() - ts < CACHE_TTL:
                 return df
-            del cache[lid]
+            del cache[key]
     return None
 
 
-def _cache_set(lid: int, df: pd.DataFrame) -> None:
+def _cache_set(lid: int, datum: str, datum_do: str, df: pd.DataFrame) -> None:
     cache = _get_shared_cache()
     lock = _get_shared_lock()
+    key = (lid, datum, datum_do)
     with lock:
-        cache[lid] = (time.time(), df)
+        cache[key] = (time.time(), df)
 
 
 def _cache_clear() -> None:
@@ -389,30 +385,25 @@ def _cache_clear() -> None:
         cache.clear()
 
 
-def get_data(lokalita: int) -> pd.DataFrame:
+def get_data(lokalita: int, datum: str, datum_do: str) -> pd.DataFrame:
     """Vrátí data z cache nebo scrape on-demand."""
-    cached = _cache_get(lokalita)
+    cached = _cache_get(lokalita, datum, datum_do)
     if cached is not None:
         return cached
     email = st.secrets["moje_jmeno"]
     heslo = st.secrets["moje_heslo"]
-    df = run_scraper(email, heslo, lokalita)
+    df = run_scraper(email, heslo, lokalita, datum, datum_do)
     if "_error_login" not in df.columns:
-        _cache_set(lokalita, df)
+        _cache_set(lokalita, datum, datum_do, df)
     return df
 
 
 async def _prefetch_batch_impl(
     email: str, heslo: str, lokalita_ids: list[int],
-    cache_dict: dict, cache_lock: threading.Lock
+    cache_dict: dict, cache_lock: threading.Lock,
+    datum: str, datum_do: str
 ) -> None:
     """Scrape více poboček v JEDNÉ browser session a uloží do cache."""
-    datum = date.today().strftime("%d.%m.%Y")
-    
-    target = pd.Timestamp.today() + pd.DateOffset(months=3)
-    target += pd.Timedelta(days=6 - target.weekday())
-    datum_do = target.strftime("%d.%m.%Y")
-    
     semaphore = asyncio.Semaphore(10)
 
     async with async_playwright() as pw:
@@ -443,7 +434,7 @@ async def _prefetch_batch_impl(
 
         for lid in lokalita_ids:
             with cache_lock:
-                if lid in cache_dict:
+                if (lid, datum, datum_do) in cache_dict:
                     continue
 
             list_url = f"{BASE_URL}{LIST_PATH_TPL.format(datum=datum, datum_do=datum_do, lokalita=lid)}"
@@ -451,13 +442,13 @@ async def _prefetch_batch_impl(
                 await page.goto(list_url, wait_until="domcontentloaded", timeout=60_000)
             except PlaywrightTimeout:
                 with cache_lock:
-                    cache_dict[lid] = (time.time(), pd.DataFrame())
+                    cache_dict[(lid, datum, datum_do)] = (time.time(), pd.DataFrame())
                 continue
 
             detail_urls = await _extract_detail_urls(page)
             if not detail_urls:
                 with cache_lock:
-                    cache_dict[lid] = (time.time(), pd.DataFrame())
+                    cache_dict[(lid, datum, datum_do)] = (time.time(), pd.DataFrame())
                 continue
 
             async def _fetch(url: str) -> dict | None:
@@ -467,14 +458,17 @@ async def _prefetch_batch_impl(
             raw = await asyncio.gather(*[_fetch(u) for u in detail_urls])
             results = [r for r in raw if r is not None]
             df_res = pd.DataFrame(results) if results else pd.DataFrame()
+            key = (lid, datum, datum_do)
             with cache_lock:
-                cache_dict[lid] = (time.time(), df_res)
+                cache_dict[key] = (time.time(), df_res)
 
         await browser.close()
 
 
-def _start_prefetch(exclude_lid: int) -> None:
+def _start_prefetch(exclude_lid: int, datum: str, datum_do: str) -> None:
     """Spustí background prefetch pro priority pobočky (mimo aktuální)."""
+    if st.session_state.get("filter_type", "default") != "default":
+        return
     if st.session_state.get("_prefetch_started"):
         return
     st.session_state["_prefetch_started"] = True
@@ -491,7 +485,7 @@ def _start_prefetch(exclude_lid: int) -> None:
     c_lock = _get_shared_lock()
 
     threading.Thread(
-        target=lambda: asyncio.run(_prefetch_batch_impl(email, heslo, ids, c_dict, c_lock)),
+        target=lambda: asyncio.run(_prefetch_batch_impl(email, heslo, ids, c_dict, c_lock, datum, datum_do)),
         daemon=True,
     ).start()
 
@@ -556,8 +550,41 @@ def render_table(df: pd.DataFrame) -> None:
 # MAIN
 # ──────────────────────────────────────────────────────────────────────────────
 
+def get_date_range(filter_type: str) -> tuple[str, str]:
+    today = pd.Timestamp.today()
+    if filter_type == "last_month":
+        first_day_this_month = today.replace(day=1)
+        last_day_last_month = first_day_this_month - pd.Timedelta(days=1)
+        first_day_last_month = last_day_last_month.replace(day=1)
+        return first_day_last_month.strftime('%d.%m.%Y'), last_day_last_month.strftime('%d.%m.%Y')
+    elif filter_type == "last_3_months":
+        first_day_this_month = today.replace(day=1)
+        last_day_last_month = first_day_this_month - pd.Timedelta(days=1)
+        first_day_3_months_ago = first_day_this_month - pd.DateOffset(months=3)
+        return first_day_3_months_ago.strftime('%d.%m.%Y'), last_day_last_month.strftime('%d.%m.%Y')
+    elif filter_type == "next_month":
+        first_day_next_month = today.replace(day=1) + pd.DateOffset(months=1)
+        last_day_next_month = (first_day_next_month + pd.DateOffset(months=1)) - pd.Timedelta(days=1)
+        return first_day_next_month.strftime('%d.%m.%Y'), last_day_next_month.strftime('%d.%m.%Y')
+    elif filter_type == "next_3_months":
+        first_day_next_month = today.replace(day=1) + pd.DateOffset(months=1)
+        last_day_3_months_ahead = (first_day_next_month + pd.DateOffset(months=3)) - pd.Timedelta(days=1)
+        return first_day_next_month.strftime('%d.%m.%Y'), last_day_3_months_ahead.strftime('%d.%m.%Y')
+    elif filter_type == "custom":
+        return st.session_state.custom_start.strftime('%d.%m.%Y'), st.session_state.custom_end.strftime('%d.%m.%Y')
+    else:
+        # default
+        datum = today.strftime("%d.%m.%Y")
+        target = today + pd.DateOffset(months=3)
+        target += pd.Timedelta(days=6 - target.weekday())
+        return datum, target.strftime("%d.%m.%Y")
+
+
 def main() -> None:
     st.set_page_config(page_title="NOBE Statistiky", page_icon="🚗", layout="wide")
+
+    if "filter_type" not in st.session_state:
+        st.session_state.filter_type = "default"
 
     try:
         _ = st.secrets["moje_jmeno"]
@@ -596,12 +623,57 @@ def main() -> None:
     # ── Nadpis ──
     st.title(f"📊 Termíny – {pobocka_nazev}")
     
-    dnes_str = date.today().strftime('%d. %m. %Y')
-    target = pd.Timestamp.today() + pd.DateOffset(months=3)
-    target += pd.Timedelta(days=6 - target.weekday())
-    do_str = target.strftime('%d. %m. %Y')
-    
-    st.markdown(f"Zobrazeny budoucí termíny od **{dnes_str}** do **{do_str}**")
+    # Inicializace vlastního rozsahu
+    if "custom_start" not in st.session_state:
+        st.session_state.custom_start = pd.Timestamp.today().date()
+    if "custom_end" not in st.session_state:
+        st.session_state.custom_end = pd.Timestamp.today().date() + pd.Timedelta(days=30)
+        
+    datum_str, do_str = get_date_range(st.session_state.filter_type)
+
+    col1, col2 = st.columns([1.5, 3.5], vertical_alignment="center")
+
+    with col1:
+        st.markdown(f"**Od {datum_str} do {do_str}**")
+        
+    with col2:
+        options = {
+            "last_month": "Poslední měsíc",
+            "last_3_months": "Poslední 3 měs.",
+            "next_month": "Následující měsíc",
+            "next_3_months": "Následující 3 měs.",
+            "custom": "📅 Vlastní",
+            "default": "Zrušit filtr"
+        }
+        
+        default_val = st.session_state.filter_type if st.session_state.filter_type in options else "default"
+        
+        selection = st.segmented_control(
+            "Rychlé filtry",
+            options=list(options.keys()),
+            format_func=lambda x: options[x],
+            default=default_val,
+            selection_mode="single",
+            label_visibility="collapsed"
+        )
+        
+        if selection and selection != st.session_state.filter_type:
+            st.session_state.filter_type = selection
+            st.rerun()
+            
+    # Zobrazit date picker, pokud je vybrán "Vlastní" filtr
+    if st.session_state.filter_type == "custom":
+        selected_dates = st.date_input(
+            "Zvolte rozsah (od – do):",
+            value=(st.session_state.custom_start, st.session_state.custom_end),
+            format="DD.MM.YYYY"
+        )
+        if len(selected_dates) == 2:
+            start_date, end_date = selected_dates
+            if start_date != st.session_state.custom_start or end_date != st.session_state.custom_end:
+                st.session_state.custom_start = start_date
+                st.session_state.custom_end = end_date
+                st.rerun()
 
     st.markdown("""
         <style>
@@ -623,7 +695,7 @@ def main() -> None:
     ensure_playwright_browsers()
 
     # ── Data ──
-    df = get_data(lokalita_id)
+    df = get_data(lokalita_id, datum_str, do_str)
 
     # ── Vymaž loading screen ──
     loading_slot.empty()
@@ -672,7 +744,7 @@ def main() -> None:
         render_table(df)
 
     # ── Background prefetch priority poboček ──
-    _start_prefetch(exclude_lid=lokalita_id)
+    _start_prefetch(exclude_lid=lokalita_id, datum=datum_str, datum_do=do_str)
 
 
 if __name__ == "__main__":
