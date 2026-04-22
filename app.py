@@ -627,21 +627,26 @@ def main() -> None:
         <style>
         /* Make filter buttons smaller and pill-shaped */
         div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
-            padding: 0px 10px;
-            font-size: 13px;
-            min-height: 28px;
-            height: 28px;
-            border-radius: 14px;
+            padding: 0px 6px !important;
+            font-size: 11px !important;
+            min-height: 24px !important;
+            height: 24px !important;
+            border-radius: 12px !important;
         }
         /* Vertically align the text with the smaller buttons */
         div[data-testid="stHorizontalBlock"] p {
             margin-bottom: 0;
-            line-height: 28px;
+            line-height: 24px;
+            font-size: 14px;
+        }
+        /* Shrink gaps between columns */
+        div[data-testid="stHorizontalBlock"] {
+            gap: 0.25rem !important;
         }
         </style>
     """, unsafe_allow_html=True)
 
-    col_text, col_b1, col_b2, col_b3, col_b4 = st.columns([2.5, 1, 1, 1, 1.2])
+    col_text, col_b1, col_b2, col_b3, col_b4 = st.columns([2.6, 0.8, 0.9, 0.9, 1.2], gap="small")
     with col_text:
         st.markdown(f"Zobrazeny termíny od **{datum_str}** do **{do_str}**")
         if st.session_state.filter_type != "default":
