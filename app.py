@@ -549,7 +549,7 @@ def main() -> None:
     st.set_page_config(page_title="NOBE Statistiky", page_icon="🚗", layout="wide")
 
     if "filter_type" not in st.session_state:
-        st.session_state.filter_type = "default"
+        st.session_state.filter_type = "current_month"
 
     try:
         _ = st.secrets["moje_jmeno"]
