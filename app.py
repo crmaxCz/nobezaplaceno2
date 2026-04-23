@@ -208,6 +208,7 @@ def _parse_detail_html(html: str, url: str) -> dict:
     zaplaceno = 0
     zaplaceno_czk  = 0
     predepsano_czk = 0
+    nedostavili = 0
 
     soup = BeautifulSoup(html, "lxml")
     table = soup.find("table", class_="table-striped")
@@ -219,6 +220,9 @@ def _parse_detail_html(html: str, url: str) -> dict:
             if i == 0 or "∑" in text or not text:
                 continue
             
+            if "text-strike" in row.get("class", []):
+                nedostavili += 1
+                
             tds = row.find_all(["td", "th"], recursive=False)
             if len(tds) >= 5:
                 celkem += 1
@@ -233,6 +237,7 @@ def _parse_detail_html(html: str, url: str) -> dict:
         "Termín":        datum_str,
         "ID":            termin_id,
         "Žáků celkem":   celkem,
+        "Nedostavili se": nedostavili,
         "Zaplaceno":     zaplaceno,
         "Nezaplaceno":   celkem - zaplaceno,
         "Zaplaceno_Kč":  zaplaceno_czk,
@@ -432,12 +437,29 @@ def _start_prefetch(exclude_lid: int, datum: str, datum_do: str) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def render_table(df: pd.DataFrame) -> None:
+    today = pd.Timestamp.today().normalize()
     rows = ""
     for _, r in df.iterrows():
         pct     = r["Zaplaceno"] / max(r["Žáků celkem"], 1) * 100
         bar_w   = f"{pct:.1f}%"
         zap_col = "#2ecc71" if r["Zaplaceno"] > 0 else "#aaa"
         nez_col = "#e74c3c" if r["Nezaplaceno"] > 0 else "#aaa"
+        
+        try:
+            termin_dt = pd.to_datetime(str(r["Termín"]).split(" ")[0], format="%d.%m.%Y", dayfirst=True)
+            is_past = pd.notna(termin_dt) and termin_dt.normalize() < today
+        except:
+            is_past = False
+            
+        ned = r.get("Nedostavili se", 0)
+        celkem = max(r["Žáků celkem"], 1)
+        
+        if is_past:
+            ned_pct = (ned / celkem) * 100
+            ned_text = f"<b>{ned}</b> <span style='font-size:0.8em;opacity:0.7'>({ned_pct:.0f} %)</span>"
+        else:
+            ned_text = "-"
+
         rows += f"""
         <tr>
           <td><a href="{r['URL']}" target="_blank" style="
@@ -457,6 +479,7 @@ def render_table(df: pd.DataFrame) -> None:
                            text-align:right">{pct:.0f}&nbsp;%</span>
             </div>
           </td>
+          <td style="text-align:center">{ned_text}</td>
         </tr>"""
 
     html = f"""
@@ -477,6 +500,7 @@ def render_table(df: pd.DataFrame) -> None:
         <th style="text-align:center">✅ Zaplaceno</th>
         <th style="text-align:center">❌ Nezaplaceno</th>
         <th>Uhrazeno</th>
+        <th style="text-align:center">🚶 Nedostavili se</th>
       </tr></thead>
       <tbody>{rows}</tbody>
     </table>"""
