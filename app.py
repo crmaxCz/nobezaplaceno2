@@ -17,7 +17,8 @@ from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+import httpx
+from bs4 import BeautifulSoup
 
 # ──────────────────────────────────────────────────────────────────────────────
 # KONFIGURACE
@@ -98,31 +99,6 @@ def _show_zebra(placeholder, text: str, pct: int | None = None) -> None:
 # PLAYWRIGHT – INSTALACE BINÁREK
 # ──────────────────────────────────────────────────────────────────────────────
 
-@st.cache_resource
-def _install_chromium() -> str | None:
-    """Spustí se jednou za lifetime deploymentu. Vrací chybový text nebo None."""
-    try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            p.chromium.launch(headless=True).close()
-        return None
-    except Exception:
-        result = subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            capture_output=True, text=True
-        )
-        return result.stderr[-500:] if result.returncode != 0 else None
-
-
-def ensure_playwright_browsers() -> None:
-    err = _install_chromium()
-    if err:
-        st.error(
-            f"❌ Instalace Chromia selhala.\n\n**stderr:** `{err}`\n\n"
-            "Ujistěte se, že `packages.txt` obsahuje systémové závislosti."
-        )
-        st.stop()
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # PARSERY
@@ -160,22 +136,16 @@ def _parse_platba(td_text: str) -> bool:
 # SCRAPER
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def _block_resource(route, request):
-    if request.resource_type in BLOCKED_RESOURCES:
-        await route.abort()
-    else:
-        await route.continue_()
-
-
-async def _login(page, email: str, heslo: str) -> bool:
+async def _login(client: httpx.AsyncClient, email: str, heslo: str) -> bool:
+    """Přihlášení přes přímý POST požadavek na PHP backend."""
     try:
-        await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60_000)
-        await page.fill('input[name="log_email"]', email)
-        await page.fill('input[name="log_heslo"]', heslo)
-        await page.click('button[type="submit"], input[type="submit"]')
-        await page.wait_for_load_state("domcontentloaded", timeout=60_000)
-        return "log_email" not in (await page.content())
-    except PlaywrightTimeout:
+        resp = await client.post(
+            LOGIN_URL,
+            data={"log_email": email, "log_heslo": heslo, "akce": "login"},
+            timeout=10.0
+        )
+        return "log_email" not in resp.text
+    except Exception:
         return False
 
 
@@ -190,12 +160,13 @@ def _build_stredisko_redirect_url(datum: str, datum_do: str, lokalita: int) -> s
     )
 
 
-async def _extract_detail_urls(page) -> list[str]:
-    """Extrahuje detail URL z aktuálně načtené stránky (bez navigace)."""
-    links = await page.query_selector_all('a[href*="admin_prednaska.php?edit_id="]')
+def _extract_detail_urls(html: str) -> list[str]:
+    """Extrahuje detail URL ze staženého HTML."""
+    soup = BeautifulSoup(html, "lxml")
+    links = soup.select('a[href*="admin_prednaska.php?edit_id="]')
     seen, result = set(), []
     for link in links:
-        href = await link.get_attribute("href")
+        href = link.get("href")
         if href and href not in seen:
             full = href if href.startswith("http") else f"{BASE_URL}/{href.lstrip('/')}"
             seen.add(href)
@@ -237,24 +208,25 @@ def _parse_detail_html(html: str, url: str) -> dict:
     zaplaceno = 0
     zaplaceno_czk  = 0
     predepsano_czk = 0
+    nedostavili = 0
 
-    # Hledání tabulky .table-striped a jejích řádků
-    table_match = re.search(r"<table[^>]*table-striped[^>]*>.*?<tbody[^>]*>(.*?)</tbody>", html, re.IGNORECASE | re.DOTALL)
-    if not table_match:
-        table_match = re.search(r"<table[^>]*table-striped[^>]*>(.*?)</table>", html, re.IGNORECASE | re.DOTALL)
-
-    if table_match:
-        tbody_html = table_match.group(1)
-        rows = re.findall(r"<tr[^>]*>(.*?)</tr>", tbody_html, re.IGNORECASE | re.DOTALL)
-        for i, row_html in enumerate(rows):
-            text = re.sub(r"<[^>]+>", "", row_html).strip()
+    soup = BeautifulSoup(html, "lxml")
+    table = soup.find("table", class_="table-striped")
+    if table:
+        parent = table.find("tbody") or table
+        rows = parent.find_all("tr", recursive=False)
+        for i, row in enumerate(rows):
+            text = row.get_text(strip=True)
             if i == 0 or "∑" in text or not text:
                 continue
             
-            celkem += 1
-            tds = re.findall(r"<td[^>]*>(.*?)</td>", row_html, re.IGNORECASE | re.DOTALL)
+            if "text-strike" in row.get("class", []):
+                nedostavili += 1
+                
+            tds = row.find_all(["td", "th"], recursive=False)
             if len(tds) >= 5:
-                platba_text = re.sub(r"<[^>]+>", "", tds[4]).strip()
+                celkem += 1
+                platba_text = tds[4].get_text(separator=" ", strip=True)
                 zap_czk, pred_czk = _parse_castky(platba_text)
                 if zap_czk > 0:
                     zaplaceno += 1
@@ -265,6 +237,7 @@ def _parse_detail_html(html: str, url: str) -> dict:
         "Termín":        datum_str,
         "ID":            termin_id,
         "Žáků celkem":   celkem,
+        "Nedostavili se": nedostavili,
         "Zaplaceno":     zaplaceno,
         "Nezaplaceno":   celkem - zaplaceno,
         "Zaplaceno_Kč":  zaplaceno_czk,
@@ -273,68 +246,50 @@ def _parse_detail_html(html: str, url: str) -> dict:
     }
 
 
-async def _scrape_detail(ctx, url: str) -> dict | None:
-    """Stáhne raw HTML přes API request (bez renderování stránky)."""
+async def _scrape_detail(client: httpx.AsyncClient, url: str) -> dict | None:
+    """Stáhne raw HTML přes API request a naparsuje ho."""
     try:
-        response = await ctx.request.get(url, timeout=60_000)
-        if response.status != 200:
+        response = await client.get(url, timeout=15.0)
+        if response.status_code != 200:
             return None
-        html = await response.text()
-        return _parse_detail_html(html, url)
+        return _parse_detail_html(response.text, url)
     except Exception:
         return None
 
 
 async def scrape_all(email: str, heslo: str, lokalita: int, datum: str, datum_do: str) -> pd.DataFrame:
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
-        ctx = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
-        )
-        page = await ctx.new_page()
-        await page.route("**/*", _block_resource)
-
-        if not await _login(page, email, heslo):
-            await browser.close()
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
+    async with httpx.AsyncClient(follow_redirects=True, headers=headers) as client:
+        if not await _login(client, email, heslo):
             return pd.DataFrame(columns=["_error_login"])
 
-        # Nastaví středisko 957 a rovnou redirectne na list page (1 navigace místo 2)
+        # Nastaví středisko 957 a rovnou redirectne na list page
         redirect_url = _build_stredisko_redirect_url(datum, datum_do, lokalita)
         try:
-            await page.goto(redirect_url, wait_until="domcontentloaded", timeout=60_000)
-        except PlaywrightTimeout:
-            await browser.close()
+            resp = await client.get(redirect_url, timeout=15.0)
+        except Exception:
             return pd.DataFrame()
 
         # Ověříme, že redirect dovedl na list page; jinak fallback
-        if "admin_prednasky" not in page.url:
-            fallback = f"{BASE_URL}{LIST_PATH_TPL.format(datum=datum, lokalita=lokalita)}"
+        if "admin_prednasky" not in str(resp.url):
+            fallback = f"{BASE_URL}{LIST_PATH_TPL.format(datum=datum, datum_do=datum_do, lokalita=lokalita)}"
             try:
-                await page.goto(fallback, wait_until="domcontentloaded", timeout=60_000)
-            except PlaywrightTimeout:
-                await browser.close()
+                resp = await client.get(fallback, timeout=15.0)
+            except Exception:
                 return pd.DataFrame()
 
-        detail_urls = await _extract_detail_urls(page)
+        detail_urls = _extract_detail_urls(resp.text)
         if not detail_urls:
-            await browser.close()
             return pd.DataFrame()
 
-        # Použijeme Semaphore místo pomalého otevírání tabů (používáme ctx.request.get)
-        semaphore = asyncio.Semaphore(10)  # Můžeme zvýšit, protože neděláme rendering
+        semaphore = asyncio.Semaphore(15)  # Můžeme zvýšit, protože neděláme rendering
 
         async def fetch_one(url: str) -> dict | None:
             async with semaphore:
-                return await _scrape_detail(ctx, url)
+                return await _scrape_detail(client, url)
 
         raw = await asyncio.gather(*[fetch_one(u) for u in detail_urls])
         results = [r for r in raw if r is not None]
-
-        await browser.close()
 
     return pd.DataFrame(results) if results else pd.DataFrame()
 
@@ -403,33 +358,22 @@ async def _prefetch_batch_impl(
     cache_dict: dict, cache_lock: threading.Lock,
     datum: str, datum_do: str
 ) -> None:
-    """Scrape více poboček v JEDNÉ browser session a uloží do cache."""
-    semaphore = asyncio.Semaphore(10)
+    """Scrape více poboček v JEDNÉ session a uloží do cache."""
+    semaphore = asyncio.Semaphore(15)
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
-        ctx = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
-        )
-        page = await ctx.new_page()
-        await page.route("**/*", _block_resource)
-
-        if not await _login(page, email, heslo):
-            await browser.close()
+    async with httpx.AsyncClient(follow_redirects=True, headers=headers) as client:
+        if not await _login(client, email, heslo):
             return
 
         # Středisko 957 – jednou pro celý batch
         try:
-            await page.goto(
+            await client.get(
                 f"{BASE_URL}/admin_nastav_stredisko.php"
                 f"?form_data[session_stredisko]=957&akce=nastav_stredisko",
-                wait_until="domcontentloaded", timeout=60_000,
+                timeout=15.0
             )
-        except PlaywrightTimeout:
+        except Exception:
             pass
 
         for lid in lokalita_ids:
@@ -439,13 +383,13 @@ async def _prefetch_batch_impl(
 
             list_url = f"{BASE_URL}{LIST_PATH_TPL.format(datum=datum, datum_do=datum_do, lokalita=lid)}"
             try:
-                await page.goto(list_url, wait_until="domcontentloaded", timeout=60_000)
-            except PlaywrightTimeout:
+                resp = await client.get(list_url, timeout=15.0)
+            except Exception:
                 with cache_lock:
                     cache_dict[(lid, datum, datum_do)] = (time.time(), pd.DataFrame())
                 continue
 
-            detail_urls = await _extract_detail_urls(page)
+            detail_urls = _extract_detail_urls(resp.text)
             if not detail_urls:
                 with cache_lock:
                     cache_dict[(lid, datum, datum_do)] = (time.time(), pd.DataFrame())
@@ -453,7 +397,7 @@ async def _prefetch_batch_impl(
 
             async def _fetch(url: str) -> dict | None:
                 async with semaphore:
-                    return await _scrape_detail(ctx, url)
+                    return await _scrape_detail(client, url)
 
             raw = await asyncio.gather(*[_fetch(u) for u in detail_urls])
             results = [r for r in raw if r is not None]
@@ -461,8 +405,6 @@ async def _prefetch_batch_impl(
             key = (lid, datum, datum_do)
             with cache_lock:
                 cache_dict[key] = (time.time(), df_res)
-
-        await browser.close()
 
 
 def _start_prefetch(exclude_lid: int, datum: str, datum_do: str) -> None:
@@ -495,12 +437,29 @@ def _start_prefetch(exclude_lid: int, datum: str, datum_do: str) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def render_table(df: pd.DataFrame) -> None:
+    today = pd.Timestamp.today().normalize()
     rows = ""
     for _, r in df.iterrows():
         pct     = r["Zaplaceno"] / max(r["Žáků celkem"], 1) * 100
         bar_w   = f"{pct:.1f}%"
         zap_col = "#2ecc71" if r["Zaplaceno"] > 0 else "#aaa"
         nez_col = "#e74c3c" if r["Nezaplaceno"] > 0 else "#aaa"
+        
+        try:
+            termin_dt = pd.to_datetime(str(r["Termín"]).split(" ")[0], format="%d.%m.%Y", dayfirst=True)
+            is_past = pd.notna(termin_dt) and termin_dt.normalize() < today
+        except:
+            is_past = False
+            
+        ned = r.get("Nedostavili se", 0)
+        celkem = max(r["Žáků celkem"], 1)
+        
+        if is_past:
+            ned_pct = (ned / celkem) * 100
+            ned_text = f"<b>{ned}</b> <span style='font-size:0.8em;opacity:0.7'>({ned_pct:.0f} %)</span>"
+        else:
+            ned_text = "-"
+
         rows += f"""
         <tr>
           <td><a href="{r['URL']}" target="_blank" style="
@@ -520,6 +479,7 @@ def render_table(df: pd.DataFrame) -> None:
                            text-align:right">{pct:.0f}&nbsp;%</span>
             </div>
           </td>
+          <td style="text-align:center">{ned_text}</td>
         </tr>"""
 
     html = f"""
@@ -540,6 +500,7 @@ def render_table(df: pd.DataFrame) -> None:
         <th style="text-align:center">✅ Zaplaceno</th>
         <th style="text-align:center">❌ Nezaplaceno</th>
         <th>Uhrazeno</th>
+        <th style="text-align:center">🚶 Nedostavili se</th>
       </tr></thead>
       <tbody>{rows}</tbody>
     </table>"""
@@ -557,6 +518,10 @@ def get_date_range(filter_type: str) -> tuple[str, str]:
         last_day_last_month = first_day_this_month - pd.Timedelta(days=1)
         first_day_last_month = last_day_last_month.replace(day=1)
         return first_day_last_month.strftime('%d.%m.%Y'), last_day_last_month.strftime('%d.%m.%Y')
+    elif filter_type == "current_month":
+        first_day_this_month = today.replace(day=1)
+        last_day_this_month = (first_day_this_month + pd.DateOffset(months=1)) - pd.Timedelta(days=1)
+        return first_day_this_month.strftime('%d.%m.%Y'), last_day_this_month.strftime('%d.%m.%Y')
     elif filter_type == "last_3_months":
         first_day_this_month = today.replace(day=1)
         last_day_last_month = first_day_this_month - pd.Timedelta(days=1)
@@ -584,7 +549,7 @@ def main() -> None:
     st.set_page_config(page_title="NOBE Statistiky", page_icon="🚗", layout="wide")
 
     if "filter_type" not in st.session_state:
-        st.session_state.filter_type = "default"
+        st.session_state.filter_type = "current_month"
 
     try:
         _ = st.secrets["moje_jmeno"]
@@ -640,6 +605,7 @@ def main() -> None:
         options = {
             "last_month": "Poslední měsíc",
             "last_3_months": "Poslední 3 měs.",
+            "current_month": "Tento měsíc",
             "next_month": "Následující měsíc",
             "next_3_months": "Následující 3 měs.",
             "custom": "📅 Vlastní",
@@ -691,8 +657,6 @@ def main() -> None:
     _show_zebra(loading_slot, "Stahuji data, načítám termíny a počítám peníze...")
     st.session_state["_progress_slot"] = loading_slot
 
-    # ── Playwright (tiše, cached) ──
-    ensure_playwright_browsers()
 
     # ── Data ──
     df = get_data(lokalita_id, datum_str, do_str)
