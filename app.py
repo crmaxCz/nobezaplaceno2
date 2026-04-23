@@ -518,6 +518,10 @@ def get_date_range(filter_type: str) -> tuple[str, str]:
         last_day_last_month = first_day_this_month - pd.Timedelta(days=1)
         first_day_last_month = last_day_last_month.replace(day=1)
         return first_day_last_month.strftime('%d.%m.%Y'), last_day_last_month.strftime('%d.%m.%Y')
+    elif filter_type == "current_month":
+        first_day_this_month = today.replace(day=1)
+        last_day_this_month = (first_day_this_month + pd.DateOffset(months=1)) - pd.Timedelta(days=1)
+        return first_day_this_month.strftime('%d.%m.%Y'), last_day_this_month.strftime('%d.%m.%Y')
     elif filter_type == "last_3_months":
         first_day_this_month = today.replace(day=1)
         last_day_last_month = first_day_this_month - pd.Timedelta(days=1)
@@ -601,6 +605,7 @@ def main() -> None:
         options = {
             "last_month": "Poslední měsíc",
             "last_3_months": "Poslední 3 měs.",
+            "current_month": "Tento měsíc",
             "next_month": "Následující měsíc",
             "next_3_months": "Následující 3 měs.",
             "custom": "📅 Vlastní",
