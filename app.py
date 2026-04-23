@@ -209,23 +209,20 @@ def _parse_detail_html(html: str, url: str) -> dict:
     zaplaceno_czk  = 0
     predepsano_czk = 0
 
-    # Hledání tabulky .table-striped a jejích řádků
-    table_match = re.search(r"<table[^>]*table-striped[^>]*>.*?<tbody[^>]*>(.*?)</tbody>", html, re.IGNORECASE | re.DOTALL)
-    if not table_match:
-        table_match = re.search(r"<table[^>]*table-striped[^>]*>(.*?)</table>", html, re.IGNORECASE | re.DOTALL)
-
-    if table_match:
-        tbody_html = table_match.group(1)
-        rows = re.findall(r"<tr[^>]*>(.*?)</tr>", tbody_html, re.IGNORECASE | re.DOTALL)
-        for i, row_html in enumerate(rows):
-            text = re.sub(r"<[^>]+>", "", row_html).strip()
+    soup = BeautifulSoup(html, "lxml")
+    table = soup.find("table", class_="table-striped")
+    if table:
+        parent = table.find("tbody") or table
+        rows = parent.find_all("tr", recursive=False)
+        for i, row in enumerate(rows):
+            text = row.get_text(strip=True)
             if i == 0 or "∑" in text or not text:
                 continue
             
-            celkem += 1
-            tds = re.findall(r"<td[^>]*>(.*?)</td>", row_html, re.IGNORECASE | re.DOTALL)
+            tds = row.find_all(["td", "th"], recursive=False)
             if len(tds) >= 5:
-                platba_text = re.sub(r"<[^>]+>", "", tds[4]).strip()
+                celkem += 1
+                platba_text = tds[4].get_text(separator=" ", strip=True)
                 zap_czk, pred_czk = _parse_castky(platba_text)
                 if zap_czk > 0:
                     zaplaceno += 1
