@@ -1,0 +1,20 @@
+name: Keep Streamlit App Alive (Empty Commit)
+
+on:
+  schedule:
+    - cron: '0 */10 * * *'  # Spustí se každých 10 hodin
+  workflow_dispatch:          # Umožňuje ruční spuštění
+
+jobs:
+  empty-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create empty commit
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git commit --allow-empty -m "chore: empty commit to keep Streamlit app active"
+          git push
