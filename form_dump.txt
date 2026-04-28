@@ -1,0 +1,5 @@
+<input type="text" name="log_email" class="span12 placeholder" placeholder="E-mail">
+<input type="password" name="log_heslo" class="span12" placeholder="Heslo">
+<input type="submit" value="Přihlásit se" class="btn btn-success">
+<input type="hidden" name="akce" value="login">
+<input type="hidden" name="facebook_login_domain" value="nobe.moje-autoskola.cz">
