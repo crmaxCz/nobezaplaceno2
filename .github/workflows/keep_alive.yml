@@ -5,6 +5,9 @@ on:
     - cron: "0 */8 * * *"   # každých 8 hodin (3× denně)
   workflow_dispatch:          # manuální spuštění z GitHub UI
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # opt-in do Node.js 24, eliminuje warning
+
 jobs:
   wake:
     runs-on: ubuntu-latest
