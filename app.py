@@ -149,9 +149,10 @@ async def _login(client: httpx.AsyncClient, email: str, heslo: str) -> bool:
         return False
 
 
-def _build_stredisko_redirect_url(datum: str, datum_do: str, lokalita: int) -> str:
+def _build_stredisko_redirect_url(datum: str, datum_do: str, lokalita: int | None) -> str:
     """Sestaví URL, která nastaví středisko 957 a redirectne na list page."""
-    referer = LIST_PATH_TPL.format(datum=datum, datum_do=datum_do, lokalita=lokalita)
+    lid = "" if lokalita is None else lokalita
+    referer = LIST_PATH_TPL.format(datum=datum, datum_do=datum_do, lokalita=lid)
     return (
         f"{BASE_URL}/admin_nastav_stredisko.php"
         f"?form_data[session_stredisko]=957"
@@ -257,8 +258,9 @@ async def _scrape_detail(client: httpx.AsyncClient, url: str) -> dict | None:
         return None
 
 
-async def scrape_all(email: str, heslo: str, lokalita: int, datum: str, datum_do: str) -> pd.DataFrame:
+async def scrape_all(email: str, heslo: str, lokalita: int | None, datum: str, datum_do: str) -> pd.DataFrame:
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
+    lid = "" if lokalita is None else lokalita  # None → empty string → &vytez_lokalita=
     async with httpx.AsyncClient(follow_redirects=True, headers=headers) as client:
         if not await _login(client, email, heslo):
             return pd.DataFrame(columns=["_error_login"])
@@ -272,7 +274,7 @@ async def scrape_all(email: str, heslo: str, lokalita: int, datum: str, datum_do
 
         # Ověříme, že redirect dovedl na list page; jinak fallback
         if "admin_prednasky" not in str(resp.url):
-            fallback = f"{BASE_URL}{LIST_PATH_TPL.format(datum=datum, datum_do=datum_do, lokalita=lokalita)}"
+            fallback = f"{BASE_URL}{LIST_PATH_TPL.format(datum=datum, datum_do=datum_do, lokalita=lid)}"
             try:
                 resp = await client.get(fallback, timeout=15.0)
             except Exception:
@@ -294,7 +296,7 @@ async def scrape_all(email: str, heslo: str, lokalita: int, datum: str, datum_do
     return pd.DataFrame(results) if results else pd.DataFrame()
 
 
-def run_scraper(email: str, heslo: str, lokalita: int, datum: str, datum_do: str) -> pd.DataFrame:
+def run_scraper(email: str, heslo: str, lokalita: int | None, datum: str, datum_do: str) -> pd.DataFrame:
     return asyncio.run(scrape_all(email, heslo, lokalita, datum, datum_do))
 
 
@@ -303,7 +305,7 @@ def run_scraper(email: str, heslo: str, lokalita: int, datum: str, datum_do: str
 # ──────────────────────────────────────────────────────────────────────────────
 
 @st.cache_resource
-def _get_shared_cache() -> dict[tuple[int, str, str], tuple[float, pd.DataFrame]]:
+def _get_shared_cache() -> dict[tuple[int | None, str, str], tuple[float, pd.DataFrame]]:
     return {}
 
 
@@ -312,7 +314,7 @@ def _get_shared_lock() -> threading.Lock:
     return threading.Lock()
 
 
-def _cache_get(lid: int, datum: str, datum_do: str) -> pd.DataFrame | None:
+def _cache_get(lid: int | None, datum: str, datum_do: str) -> pd.DataFrame | None:
     cache = _get_shared_cache()
     lock = _get_shared_lock()
     key = (lid, datum, datum_do)
@@ -325,7 +327,7 @@ def _cache_get(lid: int, datum: str, datum_do: str) -> pd.DataFrame | None:
     return None
 
 
-def _cache_set(lid: int, datum: str, datum_do: str, df: pd.DataFrame) -> None:
+def _cache_set(lid: int | None, datum: str, datum_do: str, df: pd.DataFrame) -> None:
     cache = _get_shared_cache()
     lock = _get_shared_lock()
     key = (lid, datum, datum_do)
@@ -340,7 +342,7 @@ def _cache_clear() -> None:
         cache.clear()
 
 
-def get_data(lokalita: int, datum: str, datum_do: str) -> pd.DataFrame:
+def get_data(lokalita: int | None, datum: str, datum_do: str) -> pd.DataFrame:
     """Vrátí data z cache nebo scrape on-demand."""
     cached = _cache_get(lokalita, datum, datum_do)
     if cached is not None:
@@ -407,8 +409,10 @@ async def _prefetch_batch_impl(
                 cache_dict[key] = (time.time(), df_res)
 
 
-def _start_prefetch(exclude_lid: int, datum: str, datum_do: str) -> None:
+def _start_prefetch(exclude_lid: int | None, datum: str, datum_do: str) -> None:
     """Spustí background prefetch pro priority pobočky (mimo aktuální)."""
+    if exclude_lid is None:  # Všechny pobočky — prefetch per-branch nedává smysl
+        return
     if st.session_state.get("filter_type", "default") != "default":
         return
     if st.session_state.get("_prefetch_started"):
@@ -582,16 +586,19 @@ def main() -> None:
         st.stop()
 
     # ── Boční panel ──
+    _VSECHNY = "Všechny pobočky"
     with st.sidebar:
         st.title("🚗 NOBE Statistiky")
         st.markdown("---")
         st.markdown("**Pobočka**")
         pobocka_nazev = st.radio(
             label="pobocka",
-            options=list(POBOCKY.keys()),
+            options=[_VSECHNY] + list(POBOCKY.keys()),
+            index=1,   # default = Praha (index 0 = Všechny, index 1 = Praha)
             label_visibility="collapsed",
         )
-        lokalita_id = POBOCKY[pobocka_nazev]
+        # None → &vytez_lokalita= (prázdné) → server vrátí všechny pobočky
+        lokalita_id: int | None = None if pobocka_nazev == _VSECHNY else POBOCKY[pobocka_nazev]
         st.markdown("---")
         if st.button("🔄 Aktualizovat data", use_container_width=True, type="primary"):
             _cache_clear()
