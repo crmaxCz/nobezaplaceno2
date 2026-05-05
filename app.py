@@ -75,7 +75,8 @@ def _lokalita_to_city(text: str) -> str:
       'Frýek - Místek - Ostravská ...' → 'Frýek'
       'Nový Jičín'                    → 'Jičín'
     """
-    raw = text.split(" - ")[0].strip().title()
+    # Split first on ' - ' (most cities), then on ',' (e.g. Olomouc, Hodolanská...)
+    raw = text.split(" - ")[0].split(",")[0].strip().title()
     return CITY_ABBREV.get(raw, raw)
 
 
@@ -562,16 +563,33 @@ def render_table(df: pd.DataFrame) -> None:
 
     html = f"""
     <style>
-      .nobe-table {{ width:100%;border-collapse:collapse;font-size:.92rem; }}
-      .nobe-table th {{
-        padding:8px 12px;text-align:left;border-bottom:2px solid #555;
-        font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;opacity:.65;
+      .nobe-table {{
+        width:100%; border-collapse:collapse; font-size:.92rem;
+        table-layout:fixed;            /* enables % column widths */
       }}
-      .nobe-table td {{ padding:9px 12px;border-bottom:1px solid rgba(128,128,128,.2); }}
+      .nobe-table th {{
+        padding:8px 10px; text-align:left; border-bottom:2px solid #555;
+        font-size:.78rem; text-transform:uppercase; letter-spacing:.05em; opacity:.65;
+        overflow:hidden; white-space:nowrap;
+      }}
+      .nobe-table td {{
+        padding:9px 10px; border-bottom:1px solid rgba(128,128,128,.2);
+        overflow:hidden;
+      }}
       .nobe-table tr:last-child td {{ border-bottom:none; }}
       .nobe-table tr:hover td {{ background:rgba(128,128,128,.07); }}
+      /* Termin cell: allow wrap but cap width */
+      .nobe-table td:first-child {{ white-space:nowrap; text-overflow:ellipsis; }}
     </style>
     <table class="nobe-table">
+      <colgroup>
+        <col style="width:16%">  <!-- Termín -->
+        <col style="width:6%">   <!-- Celkem -->
+        <col style="width:8%">   <!-- Zaplaceno -->
+        <col style="width:9%">   <!-- Nezaplaceno -->
+        <col style="width:42%">  <!-- Uhrazeno (progres bar) -->
+        <col style="width:10%">  <!-- Nedostavili se -->
+      </colgroup>
       <thead><tr>
         <th>Termín</th>
         <th style="text-align:center">Celkem</th>
