@@ -58,6 +58,26 @@ CONCURRENCY       = 6
 CACHE_TTL         = 1800  # 30 minut
 BLOCKED_RESOURCES = {"image", "stylesheet", "font", "media"}
 
+# Zkratky pro dvoujmenná města zobrazovaná v režimu "Všechny pobočky"
+CITY_ABBREV: dict[str, str] = {
+    "Nový Jičín":      "Jičín",
+    "Hradec Králové": "Hradec",
+    "Frýek-Místek":  "Frýek",   # pro per-city mode; all-branches používá split
+}
+
+
+def _lokalita_to_city(text: str) -> str:
+    """Odvodí zkrácený název města z textu sloupce Lokalita na list stránce.
+
+    Příklady:
+      'Ostrava - Sokola Tůmý 1099/1'  → 'Ostrava'
+      'PARDUBICE - Dům techniky ...'  → 'Pardubice'
+      'Frýek - Místek - Ostravská ...' → 'Frýek'
+      'Nový Jičín'                    → 'Jičín'
+    """
+    raw = text.split(" - ")[0].strip().title()
+    return CITY_ABBREV.get(raw, raw)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # GIF LOADER
@@ -175,6 +195,47 @@ def _extract_detail_urls(html: str) -> list[str]:
     return result
 
 
+def _extract_detail_urls_with_city(html: str) -> list[tuple[str, str]]:
+    """Extrahuje (detail_url, city_name) z tabulky #tab-terminy na list stránce.
+
+    Používá sloupec Lokalita pro odvozeni zkráceného názvu města.
+    Fallback na _extract_detail_urls (city='') pokud tabulka/sloupec chybí.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    table = soup.find("table", id="tab-terminy")
+    if table is None:
+        return [(u, "") for u in _extract_detail_urls(html)]
+
+    headers = [th.get_text(strip=True) for th in table.select("thead th")]
+    try:
+        lok_idx: int | None = headers.index("Lokalita")
+    except ValueError:
+        lok_idx = None
+
+    seen: set[str] = set()
+    result: list[tuple[str, str]] = []
+    for row in table.select("tbody tr"):
+        link = row.find("a", href=lambda h: h and "admin_prednaska.php?edit_id=" in h)  # type: ignore[arg-type]
+        if not link:
+            continue
+        href = link.get("href", "")
+        if not href or href in seen:
+            continue
+        seen.add(href)
+        full = href if href.startswith("http") else f"{BASE_URL}/{href.lstrip('/')}"
+
+        city = ""
+        if lok_idx is not None:
+            tds = row.find_all("td")
+            if len(tds) > lok_idx:
+                city = _lokalita_to_city(tds[lok_idx].get_text(strip=True))
+
+        result.append((full, city))
+
+    # Fallback: tabulka existuje, ale nemá žádné validní řádky
+    return result if result else [(u, "") for u in _extract_detail_urls(html)]
+
+
 def _parse_detail_html(html: str, url: str) -> dict:
     """Synchronní parsing detailu z raw HTML (vyhýbá se async DOM queries pro vyšší rychlost)."""
     termin_match = re.search(r"edit_id=(\d+)", url)
@@ -280,17 +341,26 @@ async def scrape_all(email: str, heslo: str, lokalita: int | None, datum: str, d
             except Exception:
                 return pd.DataFrame()
 
-        detail_urls = _extract_detail_urls(resp.text)
-        if not detail_urls:
+        # Při výpisu všech poboček (lokalita is None) použijeme extrakci s městem;
+        # jinak standardní extrakce bez přidávání Pobočka sloupce
+        if lokalita is None:
+            url_city_pairs = _extract_detail_urls_with_city(resp.text)
+        else:
+            url_city_pairs = [(u, "") for u in _extract_detail_urls(resp.text)]
+
+        if not url_city_pairs:
             return pd.DataFrame()
 
         semaphore = asyncio.Semaphore(15)  # Můžeme zvýšit, protože neděláme rendering
 
-        async def fetch_one(url: str) -> dict | None:
+        async def fetch_one(url: str, city: str) -> dict | None:
             async with semaphore:
-                return await _scrape_detail(client, url)
+                result = await _scrape_detail(client, url)
+                if result is not None and city:
+                    result["Pobočka"] = city
+                return result
 
-        raw = await asyncio.gather(*[fetch_one(u) for u in detail_urls])
+        raw = await asyncio.gather(*[fetch_one(u, c) for u, c in url_city_pairs])
         results = [r for r in raw if r is not None]
 
     return pd.DataFrame(results) if results else pd.DataFrame()
@@ -442,33 +512,37 @@ def _start_prefetch(exclude_lid: int | None, datum: str, datum_do: str) -> None:
 
 def render_table(df: pd.DataFrame) -> None:
     today = pd.Timestamp.today().normalize()
+    has_city = "Pobočka" in df.columns   # True jen v režimu Všechny pobočky
     rows = ""
     for _, r in df.iterrows():
         pct     = r["Zaplaceno"] / max(r["Žáků celkem"], 1) * 100
         bar_w   = f"{pct:.1f}%"
         zap_col = "#2ecc71" if r["Zaplaceno"] > 0 else "#aaa"
         nez_col = "#e74c3c" if r["Nezaplaceno"] > 0 else "#aaa"
-        
+
         try:
             termin_dt = pd.to_datetime(str(r["Termín"]).split(" ")[0], format="%d.%m.%Y", dayfirst=True)
             is_past = pd.notna(termin_dt) and termin_dt.normalize() < today
         except:
             is_past = False
-            
+
         ned = r.get("Nedostavili se", 0)
         celkem = max(r["Žáků celkem"], 1)
-        
+
         if is_past:
             ned_pct = (ned / celkem) * 100
             ned_text = f"<b>{ned}</b> <span style='font-size:0.8em;opacity:0.7'>({ned_pct:.0f} %)</span>"
         else:
             ned_text = "-"
 
+        # Prefix města do sloupce Termín pouze v režimu "Všechny pobočky"
+        city_prefix = f"{r['Pobočka']} " if has_city and r.get("Pobočka") else ""
+
         rows += f"""
         <tr>
           <td><a href="{r['URL']}" target="_blank" style="
               color:inherit;font-weight:600;text-decoration:none;
-              border-bottom:1px dashed #999;">{r['Termín']}</a></td>
+              border-bottom:1px dashed #999;">{city_prefix}{r['Termín']}</a></td>
           <td style="text-align:center">{r['Žáků celkem']}</td>
           <td style="text-align:center;color:{zap_col};font-weight:600">{r['Zaplaceno']}</td>
           <td style="text-align:center;color:{nez_col};font-weight:600">{r['Nezaplaceno']}</td>
