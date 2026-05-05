@@ -511,7 +511,21 @@ def render_table(df: pd.DataFrame) -> None:
 # MAIN
 # ──────────────────────────────────────────────────────────────────────────────
 
-def get_date_range(filter_type: str) -> tuple[str, str]:
+CZECH_MONTHS = [
+    "Leden", "Únor", "Březen", "Duben", "Květen", "Červen",
+    "Červenec", "Srpen", "Září", "Říjen", "Listopad", "Prosinec"
+]
+
+
+def get_month_label(offset: int) -> str:
+    """Vrátí 'Tento měsíc' pro offset=0, jinak název měsíce + rok."""
+    if offset == 0:
+        return "Tento měsíc"
+    target = (pd.Timestamp.today().replace(day=1) + pd.DateOffset(months=offset))
+    return f"{CZECH_MONTHS[target.month - 1]} {target.year}"
+
+
+def get_date_range(filter_type: str, month_offset: int = 0) -> tuple[str, str]:
     today = pd.Timestamp.today()
     if filter_type == "last_month":
         first_day_this_month = today.replace(day=1)
@@ -519,9 +533,9 @@ def get_date_range(filter_type: str) -> tuple[str, str]:
         first_day_last_month = last_day_last_month.replace(day=1)
         return first_day_last_month.strftime('%d.%m.%Y'), last_day_last_month.strftime('%d.%m.%Y')
     elif filter_type == "current_month":
-        first_day_this_month = today.replace(day=1)
-        last_day_this_month = (first_day_this_month + pd.DateOffset(months=1)) - pd.Timedelta(days=1)
-        return first_day_this_month.strftime('%d.%m.%Y'), last_day_this_month.strftime('%d.%m.%Y')
+        first_day = today.replace(day=1) + pd.DateOffset(months=month_offset)
+        last_day = (first_day + pd.DateOffset(months=1)) - pd.Timedelta(days=1)
+        return first_day.strftime('%d.%m.%Y'), last_day.strftime('%d.%m.%Y')
     elif filter_type == "last_3_months":
         first_day_this_month = today.replace(day=1)
         last_day_last_month = first_day_this_month - pd.Timedelta(days=1)
@@ -550,6 +564,8 @@ def main() -> None:
 
     if "filter_type" not in st.session_state:
         st.session_state.filter_type = "current_month"
+    if "month_offset" not in st.session_state:
+        st.session_state.month_offset = 0
 
     try:
         _ = st.secrets["moje_jmeno"]
@@ -594,38 +610,62 @@ def main() -> None:
     if "custom_end" not in st.session_state:
         st.session_state.custom_end = pd.Timestamp.today().date() + pd.Timedelta(days=30)
         
-    datum_str, do_str = get_date_range(st.session_state.filter_type)
+    month_offset = st.session_state.month_offset
+    datum_str, do_str = get_date_range(st.session_state.filter_type, month_offset)
 
     col1, col2 = st.columns([1.5, 3.5], vertical_alignment="center")
 
     with col1:
         st.markdown(f"**Od {datum_str} do {do_str}**")
-        
+
     with col2:
         options = {
             "last_month": "Poslední měsíc",
             "last_3_months": "Poslední 3 měs.",
-            "current_month": "Tento měsíc",
+            "current_month": get_month_label(month_offset),
             "next_month": "Následující měsíc",
             "next_3_months": "Následující 3 měs.",
             "custom": "📅 Vlastní",
             "default": "Zrušit filtr"
         }
-        
+
         default_val = st.session_state.filter_type if st.session_state.filter_type in options else "default"
-        
-        selection = st.segmented_control(
-            "Rychlé filtry",
-            options=list(options.keys()),
-            format_func=lambda x: options[x],
-            default=default_val,
-            selection_mode="single",
-            label_visibility="collapsed"
-        )
-        
+
+        arr_l, ctrl, arr_r = st.columns([0.05, 0.90, 0.05], vertical_alignment="center")
+
+        with arr_l:
+            if st.button("◀", key="month_prev", help="Předchozí měsíc", use_container_width=True):
+                st.session_state.filter_type = "current_month"
+                st.session_state.month_offset -= 1
+                st.rerun()
+
+        with ctrl:
+            selection = st.segmented_control(
+                "Rychlé filtry",
+                options=list(options.keys()),
+                format_func=lambda x: options[x],
+                default=default_val,
+                selection_mode="single",
+                label_visibility="collapsed"
+            )
+
+        with arr_r:
+            if st.button("▶", key="month_next", help="Následující měsíc", use_container_width=True):
+                st.session_state.filter_type = "current_month"
+                st.session_state.month_offset += 1
+                st.rerun()
+
         if selection and selection != st.session_state.filter_type:
+            # Reset offset when switching away from current_month navigation
+            if selection != "current_month":
+                st.session_state.month_offset = 0
             st.session_state.filter_type = selection
             st.rerun()
+        elif selection == "current_month" and st.session_state.filter_type == "current_month":
+            # Clicking current_month again resets offset to 0 (= skutečně tento měsíc)
+            if month_offset != 0:
+                st.session_state.month_offset = 0
+                st.rerun()
             
     # Zobrazit date picker, pokud je vybrán "Vlastní" filtr
     if st.session_state.filter_type == "custom":
