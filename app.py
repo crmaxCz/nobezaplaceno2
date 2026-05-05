@@ -633,14 +633,19 @@ def main() -> None:
             "default": "Zrušit filtr"
         }
 
-        # key= persists widget state across reruns (without it, default= resets
-        # the widget every rerun, swallowing arrow clicks).
         _CTRL = "filter_ctrl"
+        _SNAP = "filter_ctrl_snap"  # scheduled value to apply BEFORE next render
 
-        # Initialise on first load only — do NOT snap back here, that would
-        # overwrite the user's click before we read it.
+        # Initialise widget key on first load
         if _CTRL not in st.session_state:
             st.session_state[_CTRL] = st.session_state.filter_type
+
+        # Apply scheduled snap-back BEFORE the widget renders — this is the only
+        # point where Streamlit allows modifying a widget key in session_state.
+        # (Setting it after render raises StreamlitAPIException.)
+        if st.session_state.get(_SNAP) is not None:
+            st.session_state[_CTRL] = st.session_state[_SNAP]
+            st.session_state[_SNAP] = None
 
         selection = st.segmented_control(
             "Rychlé filtry",
@@ -654,12 +659,12 @@ def main() -> None:
         if selection == "prev_arrow":
             st.session_state.filter_type = "current_month"
             st.session_state.month_offset -= 1
-            st.session_state[_CTRL] = "current_month"   # snap back AFTER reading
+            st.session_state[_SNAP] = "current_month"   # schedule snap for next rerun
             st.rerun()
         elif selection == "next_arrow":
             st.session_state.filter_type = "current_month"
             st.session_state.month_offset += 1
-            st.session_state[_CTRL] = "current_month"   # snap back AFTER reading
+            st.session_state[_SNAP] = "current_month"   # schedule snap for next rerun
             st.rerun()
         elif selection and selection != st.session_state.filter_type:
             if selection != "current_month":
