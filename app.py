@@ -727,7 +727,7 @@ def main() -> None:
             "last_month": "Poslední měsíc",
             "last_3_months": "Poslední 3 měs.",
             "prev_arrow": "◀",
-            "current_month": get_month_label(month_offset),
+            "current_month": "Tento měsíc",   # always static — arrows navigate, this resets
             "next_arrow": "▶",
             "next_month": "Následující měsíc",
             "next_3_months": "Následující 3 měs.",
@@ -735,19 +735,22 @@ def main() -> None:
             "default": "Zrušit filtr"
         }
 
-        _CTRL = "filter_ctrl"
-        _SNAP = "filter_ctrl_snap"  # scheduled value to apply BEFORE next render
+        _CTRL      = "filter_ctrl"
+        _SNAP      = "filter_ctrl_snap"       # value to apply before next render
+        _SNAP_FLAG = "filter_ctrl_snap_flag"  # True = snap was programmatic, not a user click
 
         # Initialise widget key on first load
         if _CTRL not in st.session_state:
             st.session_state[_CTRL] = st.session_state.filter_type
 
-        # Apply scheduled snap-back BEFORE the widget renders — this is the only
-        # point where Streamlit allows modifying a widget key in session_state.
-        # (Setting it after render raises StreamlitAPIException.)
+        # Apply scheduled snap-back BEFORE the widget renders.
+        # Set _SNAP_FLAG so the current_month handler knows NOT to reset offset.
         if st.session_state.get(_SNAP) is not None:
-            st.session_state[_CTRL] = st.session_state[_SNAP]
-            st.session_state[_SNAP] = None
+            st.session_state[_CTRL]      = st.session_state[_SNAP]
+            st.session_state[_SNAP]      = None
+            st.session_state[_SNAP_FLAG] = True   # programmatic snap — ignore in handler
+        else:
+            st.session_state[_SNAP_FLAG] = False  # real user interaction
 
         selection = st.segmented_control(
             "Rychlé filtry",
@@ -761,18 +764,29 @@ def main() -> None:
         if selection == "prev_arrow":
             st.session_state.filter_type = "current_month"
             st.session_state.month_offset -= 1
-            st.session_state[_SNAP] = "current_month"   # schedule snap for next rerun
+            st.session_state[_SNAP] = "current_month"
             st.rerun()
         elif selection == "next_arrow":
             st.session_state.filter_type = "current_month"
             st.session_state.month_offset += 1
-            st.session_state[_SNAP] = "current_month"   # schedule snap for next rerun
+            st.session_state[_SNAP] = "current_month"
             st.rerun()
+        elif selection == "current_month":
+            # Only reset offset when the USER actually clicked the button —
+            # not when snap-back programmatically set it to "current_month".
+            if not st.session_state.get(_SNAP_FLAG):
+                if month_offset != 0 or st.session_state.filter_type != "current_month":
+                    st.session_state.month_offset = 0
+                    st.session_state.filter_type = "current_month"
+                    st.rerun()
         elif selection and selection != st.session_state.filter_type:
-            if selection != "current_month":
-                st.session_state.month_offset = 0
+            st.session_state.month_offset = 0
             st.session_state.filter_type = selection
             st.rerun()
+
+        # Show which month is being viewed when navigated away from current
+        if st.session_state.filter_type == "current_month" and month_offset != 0:
+            st.caption(f"📅 Zobrazuji: **{get_month_label(month_offset)}** — klikni na 'Tento měsíc' pro návrat")
 
 
     # Zobrazit date picker, pokud je vybrán "Vlastní" filtr
