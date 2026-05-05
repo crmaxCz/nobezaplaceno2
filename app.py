@@ -75,8 +75,11 @@ def _lokalita_to_city(text: str) -> str:
       'Frýek - Místek - Ostravská ...' → 'Frýek'
       'Nový Jičín'                    → 'Jičín'
     """
-    # Split first on ' - ' (most cities), then on ',' (e.g. Olomouc, Hodolanská...)
-    raw = text.split(" - ")[0].split(",")[0].strip().title()
+    # Regex stops at first separator: ' - '  (address separator),
+    # ',' (Olomouc format), or ' {digit}' (house number start).
+    # Fallback: use entire stripped text (e.g. "Nový Jičín").
+    m = re.match(r'^(.+?)(?:\s+-\s+|,|\s+\d)', text.strip())
+    raw = (m.group(1) if m else text).strip().title()
     return CITY_ABBREV.get(raw, raw)
 
 
