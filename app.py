@@ -619,54 +619,57 @@ def main() -> None:
         st.markdown(f"**Od {datum_str} do {do_str}**")
 
     with col2:
+        # prev_arrow / next_arrow are action-options embedded directly in the bar
+        # flanking "current_month" so they appear inside the same segmented control
         options = {
             "last_month": "Poslední měsíc",
             "last_3_months": "Poslední 3 měs.",
+            "prev_arrow": "◀",
             "current_month": get_month_label(month_offset),
+            "next_arrow": "▶",
             "next_month": "Následující měsíc",
             "next_3_months": "Následující 3 měs.",
             "custom": "📅 Vlastní",
             "default": "Zrušit filtr"
         }
 
-        default_val = st.session_state.filter_type if st.session_state.filter_type in options else "default"
+        # Arrows are actions, never persisted as filter_type
+        default_val = (
+            st.session_state.filter_type
+            if st.session_state.filter_type in options
+            and st.session_state.filter_type not in ("prev_arrow", "next_arrow")
+            else "default"
+        )
 
-        arr_l, ctrl, arr_r = st.columns([0.05, 0.90, 0.05], vertical_alignment="center")
+        selection = st.segmented_control(
+            "Rychlé filtry",
+            options=list(options.keys()),
+            format_func=lambda x: options[x],
+            default=default_val,
+            selection_mode="single",
+            label_visibility="collapsed"
+        )
 
-        with arr_l:
-            if st.button("◀", key="month_prev", help="Předchozí měsíc", use_container_width=True):
-                st.session_state.filter_type = "current_month"
-                st.session_state.month_offset -= 1
-                st.rerun()
-
-        with ctrl:
-            selection = st.segmented_control(
-                "Rychlé filtry",
-                options=list(options.keys()),
-                format_func=lambda x: options[x],
-                default=default_val,
-                selection_mode="single",
-                label_visibility="collapsed"
-            )
-
-        with arr_r:
-            if st.button("▶", key="month_next", help="Následující měsíc", use_container_width=True):
-                st.session_state.filter_type = "current_month"
-                st.session_state.month_offset += 1
-                st.rerun()
-
-        if selection and selection != st.session_state.filter_type:
-            # Reset offset when switching away from current_month navigation
+        if selection == "prev_arrow":
+            st.session_state.filter_type = "current_month"
+            st.session_state.month_offset -= 1
+            st.rerun()
+        elif selection == "next_arrow":
+            st.session_state.filter_type = "current_month"
+            st.session_state.month_offset += 1
+            st.rerun()
+        elif selection and selection != st.session_state.filter_type:
             if selection != "current_month":
                 st.session_state.month_offset = 0
             st.session_state.filter_type = selection
             st.rerun()
         elif selection == "current_month" and st.session_state.filter_type == "current_month":
-            # Clicking current_month again resets offset to 0 (= skutečně tento měsíc)
+            # Clicking current_month while already on it resets offset → skutečně tento měsíc
             if month_offset != 0:
                 st.session_state.month_offset = 0
                 st.rerun()
-            
+
+
     # Zobrazit date picker, pokud je vybrán "Vlastní" filtr
     if st.session_state.filter_type == "custom":
         selected_dates = st.date_input(
