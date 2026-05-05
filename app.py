@@ -107,25 +107,31 @@ def _build_ai_context(df: pd.DataFrame, pobocka: str, datum_str: str, do_str: st
     return summary + f"\nDETAIL TERMÍNŮ:{note}\n" + df_show.to_markdown(index=False)
 
 
-def _ask_gemini(api_key: str, data_context: str, messages: list) -> str:
-    import google.generativeai as genai
-    genai.configure(api_key=api_key)
+def _ask_groq(api_key: str, data_context: str, messages: list) -> str:
+    from groq import Groq
     
-    model = genai.GenerativeModel(
-        "gemini-2.0-flash",
-        system_instruction=AI_SYSTEM_PROMPT + "\n\n" + data_context,
-    )
-    
-    # Prevod historie do formatu Gemini API (assistant -> model)
-    history = []
-    for msg in messages[:-1]:
-        role = "model" if msg["role"] == "assistant" else "user"
-        history.append({"role": role, "parts": [msg["content"]]})
-        
-    chat = model.start_chat(history=history)
     try:
-        response = chat.send_message(messages[-1]["content"])
-        return response.text
+        client = Groq(api_key=api_key)
+        
+        # Sestavení zpráv pro Groq API (kompatibilní s OpenAI formátem)
+        groq_messages = [
+            {"role": "system", "content": AI_SYSTEM_PROMPT + "\n\n" + data_context}
+        ]
+        
+        for msg in messages:
+            groq_messages.append({
+                "role": msg["role"], 
+                "content": msg["content"]
+            })
+            
+        chat_completion = client.chat.completions.create(
+            messages=groq_messages,
+            model="llama3-70b-8192", # Velmi kvalitní model od Meta, běží rychle na Groq
+            temperature=0.7,
+            max_tokens=1024,
+        )
+        return chat_completion.choices[0].message.content
+        
     except Exception as e:
         return f"⚠️ Chyba při komunikaci s AI: {e}"
 
@@ -943,7 +949,8 @@ def main() -> None:
 
     # ── AI Floating Chat Widget ──
     try:
-        _api_key = st.secrets.get("GOOGLE_API_KEY", "")
+        # Zkontrolujeme primárně GROQ klíč, ale pokud tam dal groq klíč pod starým názvem, načteme i ten
+        _api_key = st.secrets.get("GROQ_API_KEY", "") or st.secrets.get("GOOGLE_API_KEY", "")
     except Exception:
         _api_key = ""
 
@@ -974,7 +981,7 @@ def main() -> None:
                     with st.chat_message("assistant"):
                         with st.spinner("Analyzuji..."):
                             ctx = _build_ai_context(df, pobocka_nazev, datum_str, do_str)
-                            reply = _ask_gemini(_api_key, ctx, st.session_state.ai_messages)
+                            reply = _ask_groq(_api_key, ctx, st.session_state.ai_messages)
                         st.markdown(reply)
                 st.session_state.ai_messages.append({"role": "assistant", "content": reply})
                 
