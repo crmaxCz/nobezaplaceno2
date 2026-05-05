@@ -126,7 +126,7 @@ def _ask_groq(api_key: str, data_context: str, messages: list) -> str:
             
         chat_completion = client.chat.completions.create(
             messages=groq_messages,
-            model="llama3-70b-8192", # Velmi kvalitní model od Meta, běží rychle na Groq
+            model="llama-3.3-70b-versatile", # Velmi kvalitní model od Meta, běží rychle na Groq
             temperature=0.7,
             max_tokens=1024,
         )
