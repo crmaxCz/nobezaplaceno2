@@ -633,19 +633,25 @@ def main() -> None:
             "default": "Zrušit filtr"
         }
 
-        # Arrows are actions, never persisted as filter_type
-        default_val = (
-            st.session_state.filter_type
-            if st.session_state.filter_type in options
-            and st.session_state.filter_type not in ("prev_arrow", "next_arrow")
-            else "default"
-        )
+        # ROOT CAUSE FIX: without key= the widget resets to `default` on every
+        # st.rerun(), silently swallowing arrow clicks. Using key= makes Streamlit
+        # persist widget state in session_state across reruns.
+        _CTRL = "filter_ctrl"
+
+        # Initialise key on first load
+        if _CTRL not in st.session_state:
+            st.session_state[_CTRL] = st.session_state.filter_type
+
+        # If the widget is showing an arrow (action, not state), snap it back
+        # to the real filter before the widget renders so it never stays highlighted
+        if st.session_state[_CTRL] in ("prev_arrow", "next_arrow"):
+            st.session_state[_CTRL] = st.session_state.filter_type
 
         selection = st.segmented_control(
             "Rychlé filtry",
             options=list(options.keys()),
             format_func=lambda x: options[x],
-            default=default_val,
+            key=_CTRL,
             selection_mode="single",
             label_visibility="collapsed"
         )
@@ -653,21 +659,18 @@ def main() -> None:
         if selection == "prev_arrow":
             st.session_state.filter_type = "current_month"
             st.session_state.month_offset -= 1
+            st.session_state[_CTRL] = "current_month"   # snap back before rerun
             st.rerun()
         elif selection == "next_arrow":
             st.session_state.filter_type = "current_month"
             st.session_state.month_offset += 1
+            st.session_state[_CTRL] = "current_month"   # snap back before rerun
             st.rerun()
         elif selection and selection != st.session_state.filter_type:
             if selection != "current_month":
                 st.session_state.month_offset = 0
             st.session_state.filter_type = selection
             st.rerun()
-        elif selection == "current_month" and st.session_state.filter_type == "current_month":
-            # Clicking current_month while already on it resets offset → skutečně tento měsíc
-            if month_offset != 0:
-                st.session_state.month_offset = 0
-                st.rerun()
 
 
     # Zobrazit date picker, pokud je vybrán "Vlastní" filtr
