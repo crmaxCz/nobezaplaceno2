@@ -735,19 +735,22 @@ def main() -> None:
             "default": "Zrušit filtr"
         }
 
-        _CTRL = "filter_ctrl"
-        _SNAP = "filter_ctrl_snap"  # scheduled value to apply BEFORE next render
+        _CTRL      = "filter_ctrl"
+        _SNAP      = "filter_ctrl_snap"       # value to apply before next render
+        _SNAP_FLAG = "filter_ctrl_snap_flag"  # True = snap was programmatic, not a user click
 
         # Initialise widget key on first load
         if _CTRL not in st.session_state:
             st.session_state[_CTRL] = st.session_state.filter_type
 
-        # Apply scheduled snap-back BEFORE the widget renders — this is the only
-        # point where Streamlit allows modifying a widget key in session_state.
-        # (Setting it after render raises StreamlitAPIException.)
+        # Apply scheduled snap-back BEFORE the widget renders.
+        # Set _SNAP_FLAG so the current_month handler knows NOT to reset offset.
         if st.session_state.get(_SNAP) is not None:
-            st.session_state[_CTRL] = st.session_state[_SNAP]
-            st.session_state[_SNAP] = None
+            st.session_state[_CTRL]      = st.session_state[_SNAP]
+            st.session_state[_SNAP]      = None
+            st.session_state[_SNAP_FLAG] = True   # programmatic snap — ignore in handler
+        else:
+            st.session_state[_SNAP_FLAG] = False  # real user interaction
 
         selection = st.segmented_control(
             "Rychlé filtry",
@@ -769,11 +772,13 @@ def main() -> None:
             st.session_state[_SNAP] = "current_month"
             st.rerun()
         elif selection == "current_month":
-            # Always reset to the actual current month regardless of offset
-            if month_offset != 0 or st.session_state.filter_type != "current_month":
-                st.session_state.month_offset = 0
-                st.session_state.filter_type = "current_month"
-                st.rerun()
+            # Only reset offset when the USER actually clicked the button —
+            # not when snap-back programmatically set it to "current_month".
+            if not st.session_state.get(_SNAP_FLAG):
+                if month_offset != 0 or st.session_state.filter_type != "current_month":
+                    st.session_state.month_offset = 0
+                    st.session_state.filter_type = "current_month"
+                    st.rerun()
         elif selection and selection != st.session_state.filter_type:
             st.session_state.month_offset = 0
             st.session_state.filter_type = selection
