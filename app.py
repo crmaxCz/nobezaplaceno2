@@ -948,72 +948,38 @@ def main() -> None:
         _api_key = ""
 
     if _api_key:
-        st.markdown("""
-        <style>
-        /* CSS hack pro zafixovani popover tlacitka vpravo dole */
-        div[data-testid="stPopover"] {
-            position: fixed;
-            bottom: 24px;
-            right: 24px;
-            z-index: 99999;
-        }
-        div[data-testid="stPopover"] > button {
-            width: 56px;
-            height: 56px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #4f8ef7, #8b5cf6);
-            border: none;
-            box-shadow: 0 4px 18px rgba(0,0,0,.35);
-            transition: transform 0.15s;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        div[data-testid="stPopover"] > button:hover {
-            transform: scale(1.1);
-        }
-        div[data-testid="stPopover"] > button p {
-            font-size: 26px;
-            margin: 0;
-            padding: 0;
-            line-height: 1;
-        }
-        /* Zvetseni popover okna s chatem */
-        div[data-testid="stPopoverBody"] {
-            width: 400px !important;
-            max-height: 600px;
-            overflow-y: auto;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-
-        with st.popover("💬", help="NOBE AI Analytik"):
+        with st.sidebar:
             st.markdown("### 🤖 NOBE AI Analytik")
+            st.caption("Ptej se na trendy a statistiky v zobrazených datech.")
             
             if "ai_messages" not in st.session_state:
                 st.session_state.ai_messages = []
                 
+            # Kontejner pro historii chatu (aby input zůstal dole)
+            chat_container = st.container(height=500, border=False)
+            
             # Zobrazit historii chatu
-            for msg in st.session_state.ai_messages:
-                with st.chat_message(msg["role"]):
-                    st.markdown(msg["content"])
-                    
+            with chat_container:
+                for msg in st.session_state.ai_messages:
+                    with st.chat_message(msg["role"]):
+                        st.markdown(msg["content"])
+                        
+            # Vstup od uživatele (zůstane přilepený dole v sidebaru díky nativnímu chování)
             if prompt := st.chat_input("Zeptej se na data..."):
-                # Pridat dotaz uzivatele
                 st.session_state.ai_messages.append({"role": "user", "content": prompt})
-                with st.chat_message("user"):
-                    st.markdown(prompt)
+                with chat_container:
+                    with st.chat_message("user"):
+                        st.markdown(prompt)
                     
-                # Zavolat Gemini
-                with st.chat_message("assistant"):
-                    with st.spinner("Analyzuji..."):
-                        ctx = _build_ai_context(df, pobocka_nazev, datum_str, do_str)
-                        reply = _ask_gemini(_api_key, ctx, st.session_state.ai_messages)
-                    st.markdown(reply)
+                    with st.chat_message("assistant"):
+                        with st.spinner("Analyzuji..."):
+                            ctx = _build_ai_context(df, pobocka_nazev, datum_str, do_str)
+                            reply = _ask_gemini(_api_key, ctx, st.session_state.ai_messages)
+                        st.markdown(reply)
                 st.session_state.ai_messages.append({"role": "assistant", "content": reply})
                 
             if st.session_state.ai_messages:
-                if st.button("🗑️ Smazat historii"):
+                if st.button("🗑️ Smazat historii", use_container_width=True):
                     st.session_state.ai_messages = []
                     st.rerun()
 
