@@ -840,17 +840,25 @@ def main() -> None:
         pred_czk = int(df["Předepsáno_Kč"].sum())
         zap_pct  = zap_czk / pred_czk * 100 if pred_czk else 0
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("📋 Počet termínů",  len(df))
-        col2.metric("👥 Žáků celkem",    int(df["Žáků celkem"].sum()))
+        zaci_total = int(df["Žáků celkem"].sum())
+        total_ned  = int(df["Nedostavili se"].sum()) if "Nedostavili se" in df.columns else 0
+        ned_pct    = total_ned / zaci_total * 100 if zaci_total else 0
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("📋 Počet termínů", len(df))
+        col2.metric("👥 Žáků celkem",   zaci_total)
         col3.metric(
             "💳 Celkem zaplaceno",
             int(df["Zaplaceno"].sum()),
-            delta=f"{int(df['Zaplaceno'].sum() / max(df['Žáků celkem'].sum(), 1) * 100)} % má alespoň něco uhrazeno",
+            delta=f"{int(df['Zaplaceno'].sum() / max(zaci_total, 1) * 100)} % má alespoň něco uhrazeno",
         )
         col3.caption(
             f"{zap_czk:,} z {pred_czk:,} Kč — {zap_pct:.0f} %"
             .replace(",", "\u00a0")
+        )
+        col4.metric(
+            "🚶 Nepřišlo celkem",
+            f"{total_ned} ({ned_pct:.0f}\u00a0%)",
         )
         st.markdown("---")
         render_table(df)
