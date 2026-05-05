@@ -65,6 +65,47 @@ CITY_ABBREV: dict[str, str] = {
     "Frýek-Místek":  "Frýek",   # pro per-city mode; all-branches používá split
 }
 
+AI_SYSTEM_PROMPT = (
+    "Jsi AI analytik pro autoškolu NOBE. Reaguj výhradně v češtině. "
+    "Buď st ručný, konkrétní a prakticky zaměřený.\n\n"
+    "Sloupce v datech:\n"
+    "- Termín: datum a čas výukovou přednášky\n"
+    "- Žáků celkem: počet přihlášených žáků\n"
+    "- Zaplaceno / Nezaplaceno: počet žáků dle platného stavu\n"
+    "- Zaplaceno_Kč / Předepsáno_Kč: finanční sumy v Kč\n"
+    "- Nedostavili se: absence (u budoucích termínů je 0)\n"
+    "- Pobočka: město (jen v režimu Všechny pobočky)\n\n"
+    "Zaměřuj se na: platní morálku, trendy, anomálie, doporučení pro management autoškoly."
+)
+
+
+def _build_ai_context(df: pd.DataFrame, pobocka: str, datum_str: str, do_str: str) -> str:
+    """Převede aktuální DataFrame + metadata filtru na textový kontext pro Gemini."""
+    cols = [c for c in df.columns if c != "URL"]
+    zaci    = int(df["Žáků celkem"].sum())
+    zap     = int(df["Zaplaceno"].sum())
+    nezap   = int(df["Nezaplaceno"].sum())
+    zap_kc  = int(df["Zaplaceno_Kč"].sum())
+    pred_kc = int(df["Předepsáno_Kč"].sum())
+    ned     = int(df["Nedostavili se"].sum()) if "Nedostavili se" in df.columns else 0
+
+    summary = (
+        f"KONTEXT DASHBOARDU:\n"
+        f"Pobočka: {pobocka}\n"
+        f"Období: {datum_str} \u2013 {do_str}\n"
+        f"Počet termínů: {len(df)}\n"
+        f"Žáků celkem: {zaci}\n"
+        f"Zaplaceno: {zap} ({zap/max(zaci,1)*100:.0f}\u00a0%)\n"
+        f"Nezaplaceno: {nezap} ({nezap/max(zaci,1)*100:.0f}\u00a0%)\n"
+        f"Zaplaceno Kč: {zap_kc:,}\n"
+        f"Předepsáno Kč: {pred_kc:,}\n"
+        f"Uhrazeno: {zap_kc/max(pred_kc,1)*100:.1f}\u00a0%\n"
+        f"Nedostavili se: {ned} ({ned/max(zaci,1)*100:.1f}\u00a0%)\n"
+    )
+    df_show = df[cols].head(150)
+    note    = f"\n*(zobrazeno {len(df_show)} z {len(df)} termínů)*" if len(df) > 150 else ""
+    return summary + f"\nDETAIL TERMÍNŮ:{note}\n" + df_show.to_markdown(index=False)
+
 
 def _lokalita_to_city(text: str) -> str:
     """Odvodí zkrácený název města z textu sloupce Lokalita na list stránce.
@@ -876,6 +917,142 @@ def main() -> None:
         )
         st.markdown("---")
         render_table(df)
+
+    # ── AI Floating Chat Widget ──
+    try:
+        _api_key = st.secrets.get("GOOGLE_API_KEY", "")
+    except Exception:
+        _api_key = ""
+
+    if _api_key:
+        import json as _json
+        _ctx  = _build_ai_context(df, pobocka_nazev, datum_str, do_str)
+        _sys  = _json.dumps(AI_SYSTEM_PROMPT + "\n\n" + _ctx)
+        _key  = _json.dumps(_api_key)
+        _init = _json.dumps(
+            "Proveď komplexní analýzu zobrazených dat. "
+            "Shrn klíčové trendy, upozorní na anomálie "
+            "a navrhni konkrétní doporučení pro management."
+        )
+        st.markdown(f"""
+<style>
+#nobe-ai-btn{{position:fixed;bottom:24px;right:24px;z-index:10000;
+  width:56px;height:56px;border-radius:50%;border:none;cursor:pointer;
+  background:linear-gradient(135deg,#4f8ef7,#8b5cf6);
+  color:#fff;font-size:26px;box-shadow:0 4px 18px rgba(0,0,0,.35);
+  display:flex;align-items:center;justify-content:center;
+  transition:transform .15s;}}
+#nobe-ai-btn:hover{{transform:scale(1.1);}}
+#nobe-ai-panel{{position:fixed;bottom:90px;right:24px;z-index:10000;
+  width:380px;max-height:540px;border-radius:16px;overflow:hidden;
+  box-shadow:0 8px 32px rgba(0,0,0,.4);display:none;
+  flex-direction:column;background:#1e1e2e;font-family:sans-serif;}}
+#nobe-ai-head{{background:linear-gradient(135deg,#4f8ef7,#8b5cf6);
+  padding:12px 16px;color:#fff;display:flex;align-items:center;
+  justify-content:space-between;}}
+#nobe-ai-head span{{font-weight:700;font-size:.95rem;}}
+#nobe-ai-head button{{background:none;border:none;color:#fff;
+  cursor:pointer;font-size:18px;line-height:1;}}
+#nobe-ai-msgs{{flex:1;overflow-y:auto;padding:14px 14px 6px;
+  display:flex;flex-direction:column;gap:10px;max-height:380px;}}
+.nobe-msg{{padding:10px 13px;border-radius:12px;font-size:.86rem;
+  line-height:1.5;max-width:92%;white-space:pre-wrap;word-break:break-word;}}
+.nobe-user{{background:#4f8ef7;color:#fff;align-self:flex-end;
+  border-bottom-right-radius:3px;}}
+.nobe-ai{{background:#2a2a3e;color:#e2e8f0;align-self:flex-start;
+  border-bottom-left-radius:3px;}}
+.nobe-dots{{display:inline-flex;gap:4px;padding:8px 12px;
+  background:#2a2a3e;border-radius:12px;align-self:flex-start;}}
+.nobe-dots span{{width:7px;height:7px;border-radius:50%;
+  background:#8b5cf6;animation:nobe-bounce .9s infinite;}}
+.nobe-dots span:nth-child(2){{animation-delay:.15s;}}
+.nobe-dots span:nth-child(3){{animation-delay:.3s;}}
+@keyframes nobe-bounce{{0%,80%,100%{{transform:translateY(0)}}
+  40%{{transform:translateY(-6px)}}}}
+#nobe-ai-foot{{padding:10px;border-top:1px solid #333;
+  display:flex;gap:8px;background:#1e1e2e;}}
+#nobe-ai-input{{flex:1;background:#2a2a3e;border:1px solid #444;
+  border-radius:8px;padding:9px 12px;color:#e2e8f0;font-size:.86rem;
+  outline:none;resize:none;}}
+#nobe-ai-input:focus{{border-color:#4f8ef7;}}
+#nobe-ai-send{{background:linear-gradient(135deg,#4f8ef7,#8b5cf6);
+  border:none;border-radius:8px;color:#fff;padding:9px 14px;
+  cursor:pointer;font-size:18px;}}
+</style>
+<div id="nobe-ai-btn" onclick="nobeToggle()" title="AI Analytik">\U0001f4ac</div>
+<div id="nobe-ai-panel">
+  <div id="nobe-ai-head">
+    <span>\U0001f916 NOBE AI Analytik</span>
+    <button onclick="nobeToggle()" title="Zav\u0159it">\u00d7</button>
+  </div>
+  <div id="nobe-ai-msgs"></div>
+  <div id="nobe-ai-foot">
+    <textarea id="nobe-ai-input" rows="1"
+      placeholder="Zeptej se na data..."
+      onkeydown="if(event.key==='Enter'&&!event.shiftKey){{event.preventDefault();nobeSend();}}"></textarea>
+    <button id="nobe-ai-send" onclick="nobeSend()" title="Odeslat">&#9650;</button>
+  </div>
+</div>
+<script>
+(function(){{
+const SYS={_sys};const KEY={_key};const INIT={_init};
+let hist=[];let opened=false;
+function nobeToggle(){{
+  const p=document.getElementById('nobe-ai-panel');
+  opened=!opened;
+  p.style.display=opened?'flex':'none';
+  if(opened&&hist.length===0){{nobeAutoSend();}}
+}}
+window.nobeToggle=nobeToggle;
+function addMsg(role,text){{
+  const c=document.getElementById('nobe-ai-msgs');
+  const d=document.createElement('div');
+  d.className='nobe-msg '+(role==='user'?'nobe-user':'nobe-ai');
+  d.textContent=text;
+  c.appendChild(d);c.scrollTop=c.scrollHeight;
+  return d;
+}}
+function showDots(){{
+  const c=document.getElementById('nobe-ai-msgs');
+  const d=document.createElement('div');
+  d.className='nobe-dots';d.id='nobe-typing';
+  d.innerHTML='<span></span><span></span><span></span>';
+  c.appendChild(d);c.scrollTop=c.scrollHeight;
+}}
+function removeDots(){{const d=document.getElementById('nobe-typing');if(d)d.remove();}}
+async function nobeCall(userMsg){{
+  hist.push({{role:'user',parts:[{{text:userMsg}}]}});
+  showDots();
+  try{{
+    const r=await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key='+KEY,
+      {{method:'POST',headers:{{'Content-Type':'application/json'}},
+       body:JSON.stringify({{
+         system_instruction:{{parts:[{{text:SYS}}]}},
+         contents:hist,
+         generationConfig:{{temperature:0.7,maxOutputTokens:1024}}
+       }})}}
+    );
+    const data=await r.json();
+    const reply=data?.candidates?.[0]?.content?.parts?.[0]?.text||'(pr\u00e1zdn\u00e1 odpov\u011b\u010f)';
+    removeDots();addMsg('assistant',reply);
+    hist.push({{role:'model',parts:[{{text:reply}}]}});
+  }}catch(e){{removeDots();addMsg('assistant','\u26a0\ufe0f Chyba: '+e.message);}}
+}}
+function nobeAutoSend(){{nobeCall(INIT);}}
+function nobeSend(){{
+  const inp=document.getElementById('nobe-ai-input');
+  const txt=inp.value.trim();if(!txt)return;
+  addMsg('user',txt);inp.value='';
+  inp.style.height='auto';
+  nobeCall(txt);
+}}
+window.nobeSend=nobeSend;
+const inp=document.getElementById('nobe-ai-input');
+inp.addEventListener('input',function(){{this.style.height='auto';this.style.height=Math.min(this.scrollHeight,100)+'px';}})
+}})();
+</script>
+""", unsafe_allow_html=True)
 
     # ── Background prefetch priority poboček ──
     _start_prefetch(exclude_lid=lokalita_id, datum=datum_str, datum_do=do_str)
