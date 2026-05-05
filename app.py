@@ -58,6 +58,30 @@ CONCURRENCY       = 6
 CACHE_TTL         = 1800  # 30 minut
 BLOCKED_RESOURCES = {"image", "stylesheet", "font", "media"}
 
+# Zkratky pro dvoujmenná města zobrazovaná v režimu "Všechny pobočky"
+CITY_ABBREV: dict[str, str] = {
+    "Nový Jičín":      "Jičín",
+    "Hradec Králové": "Hradec",
+    "Frýek-Místek":  "Frýek",   # pro per-city mode; all-branches používá split
+}
+
+
+def _lokalita_to_city(text: str) -> str:
+    """Odvodí zkrácený název města z textu sloupce Lokalita na list stránce.
+
+    Příklady:
+      'Ostrava - Sokola Tůmý 1099/1'  → 'Ostrava'
+      'PARDUBICE - Dům techniky ...'  → 'Pardubice'
+      'Frýek - Místek - Ostravská ...' → 'Frýek'
+      'Nový Jičín'                    → 'Jičín'
+    """
+    # Regex stops at first separator: ' - '  (address separator),
+    # ',' (Olomouc format), or ' {digit}' (house number start).
+    # Fallback: use entire stripped text (e.g. "Nový Jičín").
+    m = re.match(r'^(.+?)(?:\s+-\s+|,|\s+\d)', text.strip())
+    raw = (m.group(1) if m else text).strip().title()
+    return CITY_ABBREV.get(raw, raw)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # GIF LOADER
@@ -149,9 +173,10 @@ async def _login(client: httpx.AsyncClient, email: str, heslo: str) -> bool:
         return False
 
 
-def _build_stredisko_redirect_url(datum: str, datum_do: str, lokalita: int) -> str:
+def _build_stredisko_redirect_url(datum: str, datum_do: str, lokalita: int | None) -> str:
     """Sestaví URL, která nastaví středisko 957 a redirectne na list page."""
-    referer = LIST_PATH_TPL.format(datum=datum, datum_do=datum_do, lokalita=lokalita)
+    lid = "" if lokalita is None else lokalita
+    referer = LIST_PATH_TPL.format(datum=datum, datum_do=datum_do, lokalita=lid)
     return (
         f"{BASE_URL}/admin_nastav_stredisko.php"
         f"?form_data[session_stredisko]=957"
@@ -172,6 +197,47 @@ def _extract_detail_urls(html: str) -> list[str]:
             seen.add(href)
             result.append(full)
     return result
+
+
+def _extract_detail_urls_with_city(html: str) -> list[tuple[str, str]]:
+    """Extrahuje (detail_url, city_name) z tabulky #tab-terminy na list stránce.
+
+    Používá sloupec Lokalita pro odvozeni zkráceného názvu města.
+    Fallback na _extract_detail_urls (city='') pokud tabulka/sloupec chybí.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    table = soup.find("table", id="tab-terminy")
+    if table is None:
+        return [(u, "") for u in _extract_detail_urls(html)]
+
+    headers = [th.get_text(strip=True) for th in table.select("thead th")]
+    try:
+        lok_idx: int | None = headers.index("Lokalita")
+    except ValueError:
+        lok_idx = None
+
+    seen: set[str] = set()
+    result: list[tuple[str, str]] = []
+    for row in table.select("tbody tr"):
+        link = row.find("a", href=lambda h: h and "admin_prednaska.php?edit_id=" in h)  # type: ignore[arg-type]
+        if not link:
+            continue
+        href = link.get("href", "")
+        if not href or href in seen:
+            continue
+        seen.add(href)
+        full = href if href.startswith("http") else f"{BASE_URL}/{href.lstrip('/')}"
+
+        city = ""
+        if lok_idx is not None:
+            tds = row.find_all("td")
+            if len(tds) > lok_idx:
+                city = _lokalita_to_city(tds[lok_idx].get_text(strip=True))
+
+        result.append((full, city))
+
+    # Fallback: tabulka existuje, ale nemá žádné validní řádky
+    return result if result else [(u, "") for u in _extract_detail_urls(html)]
 
 
 def _parse_detail_html(html: str, url: str) -> dict:
@@ -257,8 +323,9 @@ async def _scrape_detail(client: httpx.AsyncClient, url: str) -> dict | None:
         return None
 
 
-async def scrape_all(email: str, heslo: str, lokalita: int, datum: str, datum_do: str) -> pd.DataFrame:
+async def scrape_all(email: str, heslo: str, lokalita: int | None, datum: str, datum_do: str) -> pd.DataFrame:
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
+    lid = "" if lokalita is None else lokalita  # None → empty string → &vytez_lokalita=
     async with httpx.AsyncClient(follow_redirects=True, headers=headers) as client:
         if not await _login(client, email, heslo):
             return pd.DataFrame(columns=["_error_login"])
@@ -272,29 +339,38 @@ async def scrape_all(email: str, heslo: str, lokalita: int, datum: str, datum_do
 
         # Ověříme, že redirect dovedl na list page; jinak fallback
         if "admin_prednasky" not in str(resp.url):
-            fallback = f"{BASE_URL}{LIST_PATH_TPL.format(datum=datum, datum_do=datum_do, lokalita=lokalita)}"
+            fallback = f"{BASE_URL}{LIST_PATH_TPL.format(datum=datum, datum_do=datum_do, lokalita=lid)}"
             try:
                 resp = await client.get(fallback, timeout=15.0)
             except Exception:
                 return pd.DataFrame()
 
-        detail_urls = _extract_detail_urls(resp.text)
-        if not detail_urls:
+        # Při výpisu všech poboček (lokalita is None) použijeme extrakci s městem;
+        # jinak standardní extrakce bez přidávání Pobočka sloupce
+        if lokalita is None:
+            url_city_pairs = _extract_detail_urls_with_city(resp.text)
+        else:
+            url_city_pairs = [(u, "") for u in _extract_detail_urls(resp.text)]
+
+        if not url_city_pairs:
             return pd.DataFrame()
 
         semaphore = asyncio.Semaphore(15)  # Můžeme zvýšit, protože neděláme rendering
 
-        async def fetch_one(url: str) -> dict | None:
+        async def fetch_one(url: str, city: str) -> dict | None:
             async with semaphore:
-                return await _scrape_detail(client, url)
+                result = await _scrape_detail(client, url)
+                if result is not None and city:
+                    result["Pobočka"] = city
+                return result
 
-        raw = await asyncio.gather(*[fetch_one(u) for u in detail_urls])
+        raw = await asyncio.gather(*[fetch_one(u, c) for u, c in url_city_pairs])
         results = [r for r in raw if r is not None]
 
     return pd.DataFrame(results) if results else pd.DataFrame()
 
 
-def run_scraper(email: str, heslo: str, lokalita: int, datum: str, datum_do: str) -> pd.DataFrame:
+def run_scraper(email: str, heslo: str, lokalita: int | None, datum: str, datum_do: str) -> pd.DataFrame:
     return asyncio.run(scrape_all(email, heslo, lokalita, datum, datum_do))
 
 
@@ -303,7 +379,7 @@ def run_scraper(email: str, heslo: str, lokalita: int, datum: str, datum_do: str
 # ──────────────────────────────────────────────────────────────────────────────
 
 @st.cache_resource
-def _get_shared_cache() -> dict[tuple[int, str, str], tuple[float, pd.DataFrame]]:
+def _get_shared_cache() -> dict[tuple[int | None, str, str], tuple[float, pd.DataFrame]]:
     return {}
 
 
@@ -312,7 +388,7 @@ def _get_shared_lock() -> threading.Lock:
     return threading.Lock()
 
 
-def _cache_get(lid: int, datum: str, datum_do: str) -> pd.DataFrame | None:
+def _cache_get(lid: int | None, datum: str, datum_do: str) -> pd.DataFrame | None:
     cache = _get_shared_cache()
     lock = _get_shared_lock()
     key = (lid, datum, datum_do)
@@ -325,7 +401,7 @@ def _cache_get(lid: int, datum: str, datum_do: str) -> pd.DataFrame | None:
     return None
 
 
-def _cache_set(lid: int, datum: str, datum_do: str, df: pd.DataFrame) -> None:
+def _cache_set(lid: int | None, datum: str, datum_do: str, df: pd.DataFrame) -> None:
     cache = _get_shared_cache()
     lock = _get_shared_lock()
     key = (lid, datum, datum_do)
@@ -340,7 +416,7 @@ def _cache_clear() -> None:
         cache.clear()
 
 
-def get_data(lokalita: int, datum: str, datum_do: str) -> pd.DataFrame:
+def get_data(lokalita: int | None, datum: str, datum_do: str) -> pd.DataFrame:
     """Vrátí data z cache nebo scrape on-demand."""
     cached = _cache_get(lokalita, datum, datum_do)
     if cached is not None:
@@ -407,8 +483,10 @@ async def _prefetch_batch_impl(
                 cache_dict[key] = (time.time(), df_res)
 
 
-def _start_prefetch(exclude_lid: int, datum: str, datum_do: str) -> None:
+def _start_prefetch(exclude_lid: int | None, datum: str, datum_do: str) -> None:
     """Spustí background prefetch pro priority pobočky (mimo aktuální)."""
+    if exclude_lid is None:  # Všechny pobočky — prefetch per-branch nedává smysl
+        return
     if st.session_state.get("filter_type", "default") != "default":
         return
     if st.session_state.get("_prefetch_started"):
@@ -438,33 +516,37 @@ def _start_prefetch(exclude_lid: int, datum: str, datum_do: str) -> None:
 
 def render_table(df: pd.DataFrame) -> None:
     today = pd.Timestamp.today().normalize()
+    has_city = "Pobočka" in df.columns   # True jen v režimu Všechny pobočky
     rows = ""
     for _, r in df.iterrows():
         pct     = r["Zaplaceno"] / max(r["Žáků celkem"], 1) * 100
         bar_w   = f"{pct:.1f}%"
         zap_col = "#2ecc71" if r["Zaplaceno"] > 0 else "#aaa"
         nez_col = "#e74c3c" if r["Nezaplaceno"] > 0 else "#aaa"
-        
+
         try:
             termin_dt = pd.to_datetime(str(r["Termín"]).split(" ")[0], format="%d.%m.%Y", dayfirst=True)
             is_past = pd.notna(termin_dt) and termin_dt.normalize() < today
         except:
             is_past = False
-            
+
         ned = r.get("Nedostavili se", 0)
         celkem = max(r["Žáků celkem"], 1)
-        
+
         if is_past:
             ned_pct = (ned / celkem) * 100
             ned_text = f"<b>{ned}</b> <span style='font-size:0.8em;opacity:0.7'>({ned_pct:.0f} %)</span>"
         else:
             ned_text = "-"
 
+        # Prefix města do sloupce Termín pouze v režimu "Všechny pobočky"
+        city_prefix = f"{r['Pobočka']} " if has_city and r.get("Pobočka") else ""
+
         rows += f"""
         <tr>
           <td><a href="{r['URL']}" target="_blank" style="
               color:inherit;font-weight:600;text-decoration:none;
-              border-bottom:1px dashed #999;">{r['Termín']}</a></td>
+              border-bottom:1px dashed #999;">{city_prefix}{r['Termín']}</a></td>
           <td style="text-align:center">{r['Žáků celkem']}</td>
           <td style="text-align:center;color:{zap_col};font-weight:600">{r['Zaplaceno']}</td>
           <td style="text-align:center;color:{nez_col};font-weight:600">{r['Nezaplaceno']}</td>
@@ -484,16 +566,33 @@ def render_table(df: pd.DataFrame) -> None:
 
     html = f"""
     <style>
-      .nobe-table {{ width:100%;border-collapse:collapse;font-size:.92rem; }}
-      .nobe-table th {{
-        padding:8px 12px;text-align:left;border-bottom:2px solid #555;
-        font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;opacity:.65;
+      .nobe-table {{
+        width:100%; border-collapse:collapse; font-size:.92rem;
+        table-layout:fixed;            /* enables % column widths */
       }}
-      .nobe-table td {{ padding:9px 12px;border-bottom:1px solid rgba(128,128,128,.2); }}
+      .nobe-table th {{
+        padding:8px 10px; text-align:left; border-bottom:2px solid #555;
+        font-size:.78rem; text-transform:uppercase; letter-spacing:.05em; opacity:.65;
+        overflow:hidden; white-space:nowrap;
+      }}
+      .nobe-table td {{
+        padding:9px 10px; border-bottom:1px solid rgba(128,128,128,.2);
+        overflow:hidden;
+      }}
       .nobe-table tr:last-child td {{ border-bottom:none; }}
       .nobe-table tr:hover td {{ background:rgba(128,128,128,.07); }}
+      /* Termin cell: allow wrap but cap width */
+      .nobe-table td:first-child {{ white-space:nowrap; text-overflow:ellipsis; }}
     </style>
     <table class="nobe-table">
+      <colgroup>
+        <col style="width:16%">  <!-- Termín -->
+        <col style="width:6%">   <!-- Celkem -->
+        <col style="width:8%">   <!-- Zaplaceno -->
+        <col style="width:9%">   <!-- Nezaplaceno -->
+        <col style="width:42%">  <!-- Uhrazeno (progres bar) -->
+        <col style="width:10%">  <!-- Nedostavili se -->
+      </colgroup>
       <thead><tr>
         <th>Termín</th>
         <th style="text-align:center">Celkem</th>
@@ -511,7 +610,21 @@ def render_table(df: pd.DataFrame) -> None:
 # MAIN
 # ──────────────────────────────────────────────────────────────────────────────
 
-def get_date_range(filter_type: str) -> tuple[str, str]:
+CZECH_MONTHS = [
+    "Leden", "Únor", "Březen", "Duben", "Květen", "Červen",
+    "Červenec", "Srpen", "Září", "Říjen", "Listopad", "Prosinec"
+]
+
+
+def get_month_label(offset: int) -> str:
+    """Vrátí 'Tento měsíc' pro offset=0, jinak název měsíce + rok."""
+    if offset == 0:
+        return "Tento měsíc"
+    target = (pd.Timestamp.today().replace(day=1) + pd.DateOffset(months=offset))
+    return f"{CZECH_MONTHS[target.month - 1]} {target.year}"
+
+
+def get_date_range(filter_type: str, month_offset: int = 0) -> tuple[str, str]:
     today = pd.Timestamp.today()
     if filter_type == "last_month":
         first_day_this_month = today.replace(day=1)
@@ -519,9 +632,9 @@ def get_date_range(filter_type: str) -> tuple[str, str]:
         first_day_last_month = last_day_last_month.replace(day=1)
         return first_day_last_month.strftime('%d.%m.%Y'), last_day_last_month.strftime('%d.%m.%Y')
     elif filter_type == "current_month":
-        first_day_this_month = today.replace(day=1)
-        last_day_this_month = (first_day_this_month + pd.DateOffset(months=1)) - pd.Timedelta(days=1)
-        return first_day_this_month.strftime('%d.%m.%Y'), last_day_this_month.strftime('%d.%m.%Y')
+        first_day = today.replace(day=1) + pd.DateOffset(months=month_offset)
+        last_day = (first_day + pd.DateOffset(months=1)) - pd.Timedelta(days=1)
+        return first_day.strftime('%d.%m.%Y'), last_day.strftime('%d.%m.%Y')
     elif filter_type == "last_3_months":
         first_day_this_month = today.replace(day=1)
         last_day_last_month = first_day_this_month - pd.Timedelta(days=1)
@@ -550,6 +663,8 @@ def main() -> None:
 
     if "filter_type" not in st.session_state:
         st.session_state.filter_type = "current_month"
+    if "month_offset" not in st.session_state:
+        st.session_state.month_offset = 0
 
     try:
         _ = st.secrets["moje_jmeno"]
@@ -566,16 +681,19 @@ def main() -> None:
         st.stop()
 
     # ── Boční panel ──
+    _VSECHNY = "Všechny pobočky"
     with st.sidebar:
         st.title("🚗 NOBE Statistiky")
         st.markdown("---")
         st.markdown("**Pobočka**")
         pobocka_nazev = st.radio(
             label="pobocka",
-            options=list(POBOCKY.keys()),
+            options=[_VSECHNY] + list(POBOCKY.keys()),
+            index=1,   # default = Praha (index 0 = Všechny, index 1 = Praha)
             label_visibility="collapsed",
         )
-        lokalita_id = POBOCKY[pobocka_nazev]
+        # None → &vytez_lokalita= (prázdné) → server vrátí všechny pobočky
+        lokalita_id: int | None = None if pobocka_nazev == _VSECHNY else POBOCKY[pobocka_nazev]
         st.markdown("---")
         if st.button("🔄 Aktualizovat data", use_container_width=True, type="primary"):
             _cache_clear()
@@ -594,39 +712,69 @@ def main() -> None:
     if "custom_end" not in st.session_state:
         st.session_state.custom_end = pd.Timestamp.today().date() + pd.Timedelta(days=30)
         
-    datum_str, do_str = get_date_range(st.session_state.filter_type)
+    month_offset = st.session_state.month_offset
+    datum_str, do_str = get_date_range(st.session_state.filter_type, month_offset)
 
     col1, col2 = st.columns([1.5, 3.5], vertical_alignment="center")
 
     with col1:
         st.markdown(f"**Od {datum_str} do {do_str}**")
-        
+
     with col2:
+        # prev_arrow / next_arrow are action-options embedded directly in the bar
+        # flanking "current_month" so they appear inside the same segmented control
         options = {
             "last_month": "Poslední měsíc",
             "last_3_months": "Poslední 3 měs.",
-            "current_month": "Tento měsíc",
+            "prev_arrow": "◀",
+            "current_month": get_month_label(month_offset),
+            "next_arrow": "▶",
             "next_month": "Následující měsíc",
             "next_3_months": "Následující 3 měs.",
             "custom": "📅 Vlastní",
             "default": "Zrušit filtr"
         }
-        
-        default_val = st.session_state.filter_type if st.session_state.filter_type in options else "default"
-        
+
+        _CTRL = "filter_ctrl"
+        _SNAP = "filter_ctrl_snap"  # scheduled value to apply BEFORE next render
+
+        # Initialise widget key on first load
+        if _CTRL not in st.session_state:
+            st.session_state[_CTRL] = st.session_state.filter_type
+
+        # Apply scheduled snap-back BEFORE the widget renders — this is the only
+        # point where Streamlit allows modifying a widget key in session_state.
+        # (Setting it after render raises StreamlitAPIException.)
+        if st.session_state.get(_SNAP) is not None:
+            st.session_state[_CTRL] = st.session_state[_SNAP]
+            st.session_state[_SNAP] = None
+
         selection = st.segmented_control(
             "Rychlé filtry",
             options=list(options.keys()),
             format_func=lambda x: options[x],
-            default=default_val,
+            key=_CTRL,
             selection_mode="single",
             label_visibility="collapsed"
         )
-        
-        if selection and selection != st.session_state.filter_type:
+
+        if selection == "prev_arrow":
+            st.session_state.filter_type = "current_month"
+            st.session_state.month_offset -= 1
+            st.session_state[_SNAP] = "current_month"   # schedule snap for next rerun
+            st.rerun()
+        elif selection == "next_arrow":
+            st.session_state.filter_type = "current_month"
+            st.session_state.month_offset += 1
+            st.session_state[_SNAP] = "current_month"   # schedule snap for next rerun
+            st.rerun()
+        elif selection and selection != st.session_state.filter_type:
+            if selection != "current_month":
+                st.session_state.month_offset = 0
             st.session_state.filter_type = selection
             st.rerun()
-            
+
+
     # Zobrazit date picker, pokud je vybrán "Vlastní" filtr
     if st.session_state.filter_type == "custom":
         selected_dates = st.date_input(
@@ -692,17 +840,25 @@ def main() -> None:
         pred_czk = int(df["Předepsáno_Kč"].sum())
         zap_pct  = zap_czk / pred_czk * 100 if pred_czk else 0
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("📋 Počet termínů",  len(df))
-        col2.metric("👥 Žáků celkem",    int(df["Žáků celkem"].sum()))
+        zaci_total = int(df["Žáků celkem"].sum())
+        total_ned  = int(df["Nedostavili se"].sum()) if "Nedostavili se" in df.columns else 0
+        ned_pct    = total_ned / zaci_total * 100 if zaci_total else 0
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("📋 Počet termínů", len(df))
+        col2.metric("👥 Žáků celkem",   zaci_total)
         col3.metric(
             "💳 Celkem zaplaceno",
             int(df["Zaplaceno"].sum()),
-            delta=f"{int(df['Zaplaceno'].sum() / max(df['Žáků celkem'].sum(), 1) * 100)} % má alespoň něco uhrazeno",
+            delta=f"{int(df['Zaplaceno'].sum() / max(zaci_total, 1) * 100)} % má alespoň něco uhrazeno",
         )
         col3.caption(
             f"{zap_czk:,} z {pred_czk:,} Kč — {zap_pct:.0f} %"
             .replace(",", "\u00a0")
+        )
+        col4.metric(
+            "🚶 Nepřišlo celkem",
+            f"{total_ned} ({ned_pct:.0f}\u00a0%)",
         )
         st.markdown("---")
         render_table(df)
