@@ -539,7 +539,7 @@ def _fmt_yoy_delta(val: object, suffix: str = '', higher_is_better: bool = True)
 def render_table(df: pd.DataFrame, show_yoy: bool = True) -> None:
     today    = pd.Timestamp.today().normalize()
     has_city = 'Pobočka' in df.columns
-    has_yoy  = show_yoy and 'Δ_zaci' in df.columns
+    has_yoy  = show_yoy and 'delta_zaci' in df.columns
     rows = ''
     for _, r in df.iterrows():
         pct     = r['Zaplaceno'] / max(r['Žáků celkem'], 1) * 100
@@ -574,9 +574,9 @@ def render_table(df: pd.DataFrame, show_yoy: bool = True) -> None:
             if _no_pair:
                 yoy_cell = '<td style="text-align:center;opacity:.3;font-size:.8rem">—</td>'
             else:
-                d_zaci    = r.get('Δ_zaci')
-                d_zap_pct = r.get('Δ_zap_pct')
-                d_zap_czk = r.get('Δ_zaplaceno_czk')
+                d_zaci    = r.get('delta_zaci')
+                d_zap_pct = r.get('delta_zap_pct')
+                d_zap_czk = r.get('delta_zaplaceno_czk')
                 yoy_date  = r.get('yoy_date', '')
                 hist_lbl  = (
                     f'<span style="opacity:.38;font-size:.7rem">vs.\u00a0{yoy_date}</span>'
