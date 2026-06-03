@@ -578,44 +578,39 @@ def render_table(df: pd.DataFrame, show_yoy: bool = True) -> None:
                 d_zap_pct = r.get('delta_zap_pct')
                 d_zap_czk = r.get('delta_zaplaceno_czk')
                 yoy_date  = r.get('yoy_date', '')
-                hist_lbl  = (
-                    f'<span style="opacity:.38;font-size:.7rem">vs.\u00a0{yoy_date}</span>'
-                    if yoy_date else ''
+                hist_lbl  = f'<span style="opacity:.38;font-size:.7rem">vs.\u00a0{yoy_date}</span>' if yoy_date else ''
+                _z  = _fmt_yoy_delta(d_zaci)
+                _zp = _fmt_yoy_delta(d_zap_pct, '%')
+                _kc = _fmt_yoy_delta(d_zap_czk, ' Kč')
+                yoy_cell = (
+                    '<td><div style="font-size:.78rem;line-height:1.7;">'
+                    f'\U0001f465\u00a0{_z}\u00a0žáků<br>'
+                    f'\U0001f4b3\u00a0{_zp}\u00a0plat.<br>'
+                    f'\U0001f4b0\u00a0{_kc}<br>'
+                    f'{hist_lbl}</div></td>'
                 )
-                yoy_cell = f"""
-          <td>
-            <div style="font-size:.78rem;line-height:1.65;display:flex;flex-direction:column;gap:0">
-              <div>\U0001f465\u00a0{_fmt_yoy_delta(d_zaci)}\u00a0žáků</div>
-              <div>\U0001f4b3\u00a0{_fmt_yoy_delta(d_zap_pct, '%')}\u00a0plat.</div>
-              <div>\U0001f4b0\u00a0{_fmt_yoy_delta(d_zap_czk, ' Kč')}</div>
-              {hist_lbl}
-            </div>
-          </td>"""
         else:
             yoy_cell = ''
 
-        rows += f"""
-        <tr>
-          <td><a href="{r['URL']}" target="_blank" style="
-              color:inherit;font-weight:600;text-decoration:none;
-              border-bottom:1px dashed #999;">{city_prefix}{r['Termín']}</a></td>
-          <td style="text-align:center">{r['Žáků celkem']}</td>
-          <td style="text-align:center;color:{zap_col};font-weight:600">{r['Zaplaceno']}</td>
-          <td style="text-align:center;color:{nez_col};font-weight:600">{r['Nezaplaceno']}</td>
-          <td style="min-width:160px">
-            <div style="display:flex;align-items:center;gap:8px;">
-              <div style="flex:1;background:#e0e0e0;border-radius:6px;
-                          height:10px;overflow:hidden;">
-                <div style="width:{bar_w};background:#2ecc71;height:100%;
-                            border-radius:6px;"></div>
-              </div>
-              <span style="font-size:.85rem;min-width:38px;
-                           text-align:right">{pct:.0f}&nbsp;%</span>
-            </div>
-          </td>
-          <td style="text-align:center">{ned_text}</td>
-          {yoy_cell}
-        </tr>"""
+        rows += (
+            '<tr>'
+            f'<td><a href="{r["URL"]}" target="_blank" style="'
+            'color:inherit;font-weight:600;text-decoration:none;'
+            f'border-bottom:1px dashed #999;">{city_prefix}{r["Termín"]}</a></td>'
+            f'<td style="text-align:center">{r["Žáků celkem"]}</td>'
+            f'<td style="text-align:center;color:{zap_col};font-weight:600">{r["Zaplaceno"]}</td>'
+            f'<td style="text-align:center;color:{nez_col};font-weight:600">{r["Nezaplaceno"]}</td>'
+            '<td style="min-width:160px">'
+            '<div style="display:flex;align-items:center;gap:8px;">'
+            '<div style="flex:1;background:#e0e0e0;border-radius:6px;height:10px;overflow:hidden;">'
+            f'<div style="width:{bar_w};background:#2ecc71;height:100%;border-radius:6px;"></div>'
+            '</div>'
+            f'<span style="font-size:.85rem;min-width:38px;text-align:right">{pct:.0f}&nbsp;%</span>'
+            '</div></td>'
+            f'<td style="text-align:center">{ned_text}</td>'
+            f'{yoy_cell}'
+            '</tr>'
+        )
 
     if has_yoy:
         colgroup = """
