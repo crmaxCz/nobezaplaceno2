@@ -583,11 +583,13 @@ def render_table(df: pd.DataFrame, show_yoy: bool = True) -> None:
                 _zp = _fmt_yoy_delta(d_zap_pct, '%')
                 _kc = _fmt_yoy_delta(d_zap_czk, ' Kč')
                 yoy_cell = (
-                    '<td><div style="font-size:.78rem;line-height:1.7;">'
-                    f'\U0001f465\u00a0{_z}\u00a0žáků<br>'
-                    f'\U0001f4b3\u00a0{_zp}\u00a0plat.<br>'
-                    f'\U0001f4b0\u00a0{_kc}<br>'
-                    f'{hist_lbl}</div></td>'
+                    '<td style="white-space:nowrap">'
+                    '<div style="font-size:.76rem;display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;">'
+                    f'<span>\U0001f465\u00a0{_z}</span>'
+                    f'<span>\U0001f4b3\u00a0{_zp}</span>'
+                    f'<span>\U0001f4b0\u00a0{_kc}</span>'
+                    f'<span style="opacity:.45;font-size:.7rem">{hist_lbl}</span>'
+                    '</div></td>'
                 )
         else:
             yoy_cell = ''
