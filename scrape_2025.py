@@ -29,7 +29,7 @@ from bs4 import BeautifulSoup
 POBOCKY: dict[str, int] = {
     "Praha":          136,
     "Brno":           137,
-    "Plzen":          268,
+    "Plze\u0148":          268,
     "Ostrava":        354,
     "Olomouc":        133,
     "Hradec Kralove": 277,
