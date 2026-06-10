@@ -1,12 +1,13 @@
-﻿"""
-scrape_2025.py ΓÇô Jednor├ízov├╜ scraper dat za rok 2025
-=====================================================
-Spus┼Ñ lok├íln─¢:  python scrape_2025.py
-V├╜stup:         data_2025.csv  (pot├⌐ commitni do gitu)
+"""
+scrape_2025.py - One-time scraper for 2025 historical data
+===========================================================
+Run locally:  python scrape_2025.py -e email@example.com -p HesloZde
+Output:       data_2025.csv  (then commit to git)
 
-Stahuje data za ka┼╛d├╜ m─¢s├¡c roku 2025 pro ka┼╛dou pobo─ìku zvl├í┼í┼Ñ,
-aby list-page m─¢la manageable po─ìet ┼Ö├ídk┼» a city detekce fungovala spolehliv─¢.
-Odhadovan├╜ ─ìas: 5ΓÇô20 minut podle rychlosti p┼Öipojen├¡.
+Fetches all terms for every branch across all 12 months of 2025.
+Uses the same stredisko-957 redirect pattern as the main app so that
+Plzen (and all other branches) appear correctly in the listing.
+Estimated runtime: 5-20 minutes depending on connection speed.
 """
 
 import asyncio
@@ -15,34 +16,38 @@ import csv
 import os
 import re
 import sys
+from calendar import monthrange
 from datetime import date
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 from bs4 import BeautifulSoup
 
-# ΓöÇΓöÇ Konfigurace ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+# ── Configuration ─────────────────────────────────────────────────────────────
 
 POBOCKY: dict[str, int] = {
     "Praha":          136,
     "Brno":           137,
-    "Plze┼ê":          268,
+    "Plzen":          268,
     "Ostrava":        354,
     "Olomouc":        133,
-    "Hradec Kr├ílov├⌐": 277,
+    "Hradec Kralove": 277,
     "Liberec":        326,
     "Pardubice":      387,
-    "Nov├╜ Ji─ì├¡n":     151,
-    "Fr├╜dek-M├¡stek":  321,
-    "Hav├¡┼Öov":        237,
+    "Novy Jicin":     151,
+    "Frydek-Mistek":  321,
+    "Havirov":        237,
     "Opava":          203,
     "Trutnov":        215,
-    "Zl├¡n":           400,
+    "Zlin":           400,
 }
 
-BASE_URL   = "https://nobe.moje-autoskola.cz"
-LOGIN_URL  = f"{BASE_URL}/index.php"
-LIST_TPL   = (
+BASE_URL  = "https://nobe.moje-autoskola.cz"
+LOGIN_URL = f"{BASE_URL}/index.php"
+
+# List page path template (no BASE_URL prefix - used inside redirect URL)
+LIST_PATH_TPL = (
     "/admin_prednasky.php"
     "?vytez_datum_od={datum}"
     "&vytez_datum_do={datum_do}"
@@ -61,56 +66,80 @@ CSV_FIELDS = [
     "nedostavili", "termin_id", "url",
 ]
 
-SEMAPHORE_DETAIL = 12   # paraleln├¡ detail requesty
+SEMAPHORE_DETAIL = 12
 YEAR = 2025
 
 
+# ── Credential loading ────────────────────────────────────────────────────────
+
 def _load_credentials(args: argparse.Namespace) -> tuple[str, str]:
     """
-    Na─ìte email + heslo v tomto po┼Öad├¡ priorit:
-    1. CLI argumenty (--email / --password)
-    2. Prom─¢nn├⌐ prost┼Öed├¡ NOBE_EMAIL / NOBE_HESLO
-    3. Streamlit secrets.toml (.streamlit/secrets.toml)
-    4. Interaktivn├¡ input() ΓÇô bez getpass, aby fungovalo i v PowerShellu
+    Loads email + password in this priority order:
+    1. CLI args (--email / --password)
+    2. Env vars NOBE_EMAIL / NOBE_HESLO
+    3. .streamlit/secrets.toml (if present)
+    4. Interactive input() - plain, not getpass (works in PowerShell)
     """
-    email = args.email or os.environ.get('NOBE_EMAIL', '')
-    heslo = args.password or os.environ.get('NOBE_HESLO', '')
+    email = args.email or os.environ.get("NOBE_EMAIL", "")
+    heslo = args.password or os.environ.get("NOBE_HESLO", "")
 
-    # Zkus├¡me p┼Öe─ì├¡st ze Streamlit secrets.toml
     if not email or not heslo:
-        secrets_path = Path(__file__).parent / '.streamlit' / 'secrets.toml'
+        secrets_path = Path(__file__).parent / ".streamlit" / "secrets.toml"
         if secrets_path.exists():
             try:
-                content = secrets_path.read_text(encoding='utf-8')
+                content = secrets_path.read_text(encoding="utf-8")
                 for line in content.splitlines():
                     line = line.strip()
-                    if line.startswith('moje_jmeno') and '=' in line and not email:
-                        email = line.split('=', 1)[1].strip().strip('"').strip("'")
-                    if line.startswith('moje_heslo') and '=' in line and not heslo:
-                        heslo = line.split('=', 1)[1].strip().strip('"').strip("'")
+                    if line.startswith("moje_jmeno") and "=" in line and not email:
+                        email = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if line.startswith("moje_heslo") and "=" in line and not heslo:
+                        heslo = line.split("=", 1)[1].strip().strip('"').strip("'")
                 if email and heslo:
-                    print('\u2139∩╕Å  P┼Öihla┼íovac├¡ ├║daje na─ìteny z .streamlit/secrets.toml')
-            except Exception as e:
-                print(f'  ΓÜá Nepoda┼Öilo se p┼Öe─ì├¡st secrets.toml: {e}')
+                    print("  Prihlasovacie udaje nacteny z .streamlit/secrets.toml")
+            except Exception as exc:
+                print(f"  Nepodarilo se precist secrets.toml: {exc}")
 
     if not email:
-        email = input('NOBE email: ').strip()
+        email = input("NOBE email: ").strip()
     if not heslo:
-        print('NOBE heslo (bude zobrazeno): ', end='', flush=True)
+        print("NOBE heslo (bude zobrazeno): ", end="", flush=True)
         heslo = input().strip()
 
     return email, heslo
 
 
-# ΓöÇΓöÇ Parsovac├¡ helpery (kopie z app.py) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+# ── URL builder (same pattern as main app) ───────────────────────────────────
+
+def _build_redirect_url(datum: str, datum_do: str, lokalita_id: int) -> str:
+    """
+    Builds the stredisko-957 redirect URL for the list page.
+    The server sets session_stredisko=957 then redirects to the list page.
+    This is required for Plzen (and other branches) to appear in results.
+    """
+    list_path = LIST_PATH_TPL.format(
+        datum=datum,
+        datum_do=datum_do,
+        lokalita=lokalita_id,
+    )
+    return (
+        f"{BASE_URL}/admin_nastav_stredisko.php"
+        f"?form_data[session_stredisko]=957"
+        f"&akce=nastav_stredisko"
+        f"&form_data[referer]={quote(list_path, safe='')}"
+    )
+
+
+# ── HTML parsing helpers ──────────────────────────────────────────────────────
 
 def _parse_castky(td_text: str) -> tuple[int, int]:
     normalized = (
         td_text
         .replace("\xa0", " ").replace("\u202f", " ")
-        .replace(",-", "").replace("K─ì", "").replace("CZK", "")
+        .replace(",-", "").replace("Kc", "").replace("CZK", "")
         .strip()
     )
+    # Also strip the literal Czech "Kč" if bytes are correct
+    normalized = re.sub(r"K[^\s\d]*", "", normalized).strip()
     parts = re.split(r"\s+z\s+", normalized, maxsplit=1)
 
     def to_int(s: str) -> int:
@@ -127,7 +156,7 @@ def _parse_detail_html(html: str, url: str, pobocka: str) -> dict | None:
     termin_id = termin_match.group(1) if termin_match else "?"
 
     datum_str = None
-    time_str = ""
+    time_str  = ""
 
     for tag in [r"<h1[^>]*>(.*?)</h1>", r"<h2[^>]*>(.*?)</h2>", r"<title[^>]*>(.*?)</title>"]:
         m = re.search(tag, html, re.IGNORECASE | re.DOTALL)
@@ -136,7 +165,7 @@ def _parse_detail_html(html: str, url: str, pobocka: str) -> dict | None:
             dt = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})[^\d]{0,10}(\d{1,2}:\d{2})", text)
             if dt:
                 datum_str = dt.group(1)
-                time_str = dt.group(2)
+                time_str  = dt.group(2)
                 break
             d = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})", text)
             if d:
@@ -148,7 +177,7 @@ def _parse_detail_html(html: str, url: str, pobocka: str) -> dict | None:
         dt = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})[^\d]{0,10}(\d{1,2}:\d{2})", body_text)
         if dt:
             datum_str = dt.group(1)
-            time_str = dt.group(2)
+            time_str  = dt.group(2)
         else:
             d = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})", body_text)
             datum_str = d.group(1) if d else None
@@ -156,38 +185,29 @@ def _parse_detail_html(html: str, url: str, pobocka: str) -> dict | None:
     if not datum_str:
         return None
 
-    # Parsujeme datum pro ISO week
     try:
-        parts = datum_str.split(".")
-        d_val = int(parts[0])
-        m_val = int(parts[1])
-        y_val = int(parts[2])
-        dt_date = date(y_val, m_val, d_val)
+        parts  = datum_str.split(".")
+        dt_date = date(int(parts[2]), int(parts[1]), int(parts[0]))
     except Exception:
         return None
 
-    # Filtrujeme ΓÇô chceme jen rok 2025
     if dt_date.year != YEAR:
         return None
 
-    iso = dt_date.isocalendar()
-    iso_week    = iso[1]        # 1ΓÇô53
-    day_of_week = iso[2]        # 1=Pond─¢l├¡ ΓÇª 7=Ned─¢le
+    iso         = dt_date.isocalendar()
+    iso_week    = int(iso[1])
+    day_of_week = int(iso[2])
 
-    celkem = 0
-    zaplaceno = 0
-    zaplaceno_czk = 0
-    predepsano_czk = 0
-    nedostavili = 0
+    celkem = zaplaceno = zaplaceno_czk = predepsano_czk = nedostavili = 0
 
-    soup = BeautifulSoup(html, "lxml")
+    soup  = BeautifulSoup(html, "lxml")
     table = soup.find("table", class_="table-striped")
     if table:
         parent = table.find("tbody") or table
-        rows = parent.find_all("tr", recursive=False)
+        rows   = parent.find_all("tr", recursive=False)
         for i, row in enumerate(rows):
             text = row.get_text(strip=True)
-            if i == 0 or "Γêæ" in text or not text:
+            if i == 0 or not text:
                 continue
             if "text-strike" in row.get("class", []):
                 nedostavili += 1
@@ -219,7 +239,7 @@ def _parse_detail_html(html: str, url: str, pobocka: str) -> dict | None:
 
 
 def _extract_detail_urls(html: str) -> list[str]:
-    soup = BeautifulSoup(html, "lxml")
+    soup  = BeautifulSoup(html, "lxml")
     links = soup.select('a[href*="admin_prednaska.php?edit_id="]')
     seen, result = set(), []
     for link in links:
@@ -231,14 +251,14 @@ def _extract_detail_urls(html: str) -> list[str]:
     return result
 
 
-# ΓöÇΓöÇ Async scraping ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+# ── Async scraping ────────────────────────────────────────────────────────────
 
 async def _login(client: httpx.AsyncClient, email: str, heslo: str) -> bool:
     try:
         resp = await client.post(
             LOGIN_URL,
             data={"log_email": email, "log_heslo": heslo, "akce": "login"},
-            timeout=15.0
+            timeout=15.0,
         )
         return "log_email" not in resp.text
     except Exception:
@@ -253,18 +273,18 @@ async def _scrape_month(
     month: int,
     semaphore: asyncio.Semaphore,
 ) -> list[dict]:
-    """St├íhne data jedn├⌐ pobo─ìky za jeden m─¢s├¡c."""
-    from calendar import monthrange
+    """Fetch all terms for one branch in one month."""
     first_day = date(year, month, 1)
     last_day  = date(year, month, monthrange(year, month)[1])
-    datum    = first_day.strftime("%d.%m.%Y")
-    datum_do = last_day.strftime("%d.%m.%Y")
+    datum     = first_day.strftime("%d.%m.%Y")
+    datum_do  = last_day.strftime("%d.%m.%Y")
 
-    list_url = f"{BASE_URL}{LIST_TPL.format(datum=datum, datum_do=datum_do, lokalita=pobocka_id)}"
+    # Use the stredisko-957 redirect URL (same as main app) so Plzen appears
+    redirect_url = _build_redirect_url(datum, datum_do, pobocka_id)
     try:
-        resp = await client.get(list_url, timeout=20.0)
-    except Exception as e:
-        print(f"  ΓÜá list page chyba {pobocka_name} {year}/{month:02d}: {e}")
+        resp = await client.get(redirect_url, timeout=20.0)
+    except Exception as exc:
+        print(f"  ! list page error {pobocka_name} {year}/{month:02d}: {exc}")
         return []
 
     detail_urls = _extract_detail_urls(resp.text)
@@ -286,76 +306,66 @@ async def _scrape_month(
 
 
 async def scrape_all_2025(email: str, heslo: str) -> list[dict]:
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    headers   = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     semaphore = asyncio.Semaphore(SEMAPHORE_DETAIL)
     all_rows: list[dict] = []
 
     async with httpx.AsyncClient(follow_redirects=True, headers=headers) as client:
-        print("≡ƒöæ P┼Öihla┼íov├ín├¡...")
+        print("Prihlasovani...")
         if not await _login(client, email, heslo):
-            print("Γ¥î P┼Öihl├í┼íen├¡ selhalo ΓÇô zkontroluj NOBE_EMAIL / NOBE_HESLO")
+            print("Prihlaseni selhalo - zkontroluj NOBE_EMAIL / NOBE_HESLO")
             sys.exit(1)
-
-        # Nastavit st┼Öedisko 957
-        try:
-            await client.get(
-                f"{BASE_URL}/admin_nastav_stredisko.php"
-                f"?form_data[session_stredisko]=957&akce=nastav_stredisko",
-                timeout=15.0,
-            )
-        except Exception:
-            pass
 
         total = len(POBOCKY) * 12
         done  = 0
         for pobocka_name, pobocka_id in POBOCKY.items():
             for month in range(1, 13):
                 done += 1
-                print(f"[{done}/{total}] {pobocka_name} ΓÇô {YEAR}/{month:02d} ...", end=" ", flush=True)
-                rows = await _scrape_month(client, pobocka_name, pobocka_id, YEAR, month, semaphore)
-                print(f"{len(rows)} term├¡n┼»")
+                print(f"[{done}/{total}] {pobocka_name} - {YEAR}/{month:02d} ...", end=" ", flush=True)
+                rows = await _scrape_month(
+                    client, pobocka_name, pobocka_id, YEAR, month, semaphore
+                )
+                print(f"{len(rows)} terminu")
                 all_rows.extend(rows)
 
     return all_rows
 
 
-# ΓöÇΓöÇ Hlavn├¡ vstupn├¡ bod ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+# ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description='Jednor├ízov├╜ scraper NOBE dat za rok 2025'
-    )
-    parser.add_argument('--email', '-e', default='', help='P┼Öihla┼íovac├¡ email (nebo nastav NOBE_EMAIL)')
-    parser.add_argument('--password', '-p', default='', help='Heslo (nebo nastav NOBE_HESLO)')
+    parser = argparse.ArgumentParser(description="One-time NOBE data scraper for year 2025")
+    parser.add_argument("--email",    "-e", default="", help="Login email (or set NOBE_EMAIL)")
+    parser.add_argument("--password", "-p", default="", help="Password (or set NOBE_HESLO)")
     args = parser.parse_args()
 
     email, heslo = _load_credentials(args)
 
-    print(f'\n≡ƒÜÇ Spou┼ít├¡m scrape roku {YEAR} ΓÇô {len(POBOCKY)} pobo─ìek ├ù 12 m─¢s├¡c┼»')
-    print(f'≡ƒôä V├╜stup: {OUTPUT_CSV}\n')
+    print(f"\nSpoustim scrape roku {YEAR} - {len(POBOCKY)} pobocek x 12 mesicu")
+    print(f"Vystup: {OUTPUT_CSV}\n")
 
     rows = asyncio.run(scrape_all_2025(email, heslo))
 
     if not rows:
-        print('ΓÜá ┼╜├ídn├í data nebyla sta┼╛ena.')
+        print("Zadna data nebyla stazena.")
         sys.exit(1)
 
-    # Deduplikace dle termin_id (pro p┼Ö├¡pad p┼Öekryv┼» na p┼Öelomu m─¢s├¡ce)
+    # Deduplicate by termin_id (overlap possible at month boundaries)
     seen_ids: set[str] = set()
     unique_rows = []
     for r in rows:
-        tid = r.get('termin_id', '')
+        tid = r.get("termin_id", "")
         if tid not in seen_ids:
             seen_ids.add(tid)
             unique_rows.append(r)
 
-    with open(OUTPUT_CSV, 'w', newline='', encoding='utf-8') as f:
+    with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         writer.writeheader()
         writer.writerows(unique_rows)
 
-    print(f'\nΓ£à Hotovo! Ulo┼╛eno {len(unique_rows)} term├¡n┼» do {OUTPUT_CSV}')
-    print('≡ƒæë Commitni data_2025.csv do gitu a pushni na GitHub.')
+    print(f"\nHotovo! Ulozeno {len(unique_rows)} terminu do {OUTPUT_CSV}")
+    print("Commitni data_2025.csv do gitu a pushni na GitHub.")
 
 
 if __name__ == "__main__":
