@@ -71,6 +71,9 @@ def find_yoy_match(
     For a current term (date string + branch name) find the matching record
     in the historical CSV using key (iso_week, day_of_week, pobocka).
 
+    Falls back to closest day_of_week within the same iso_week + pobocka
+    when no exact day match exists (handles year-to-year schedule shifts).
+
     Returns a dict with historical values, or None if no match exists.
     """
     if df_hist.empty:
@@ -84,12 +87,25 @@ def find_yoy_match(
     iso_week   = int(iso[1])
     day_of_wk  = int(iso[2])
 
-    mask = (
+    # ── 1. Exact match: same iso_week + day_of_week + pobocka ─────────────
+    mask_exact = (
         (df_hist["iso_week"]    == iso_week) &
         (df_hist["day_of_week"] == day_of_wk) &
         (df_hist["pobocka"]     == pobocka)
     )
-    matches = df_hist[mask]
+    matches = df_hist[mask_exact]
+
+    # ── 2. Fallback: same iso_week + pobocka, pick closest day_of_week ────
+    if matches.empty:
+        mask_week = (
+            (df_hist["iso_week"] == iso_week) &
+            (df_hist["pobocka"]  == pobocka)
+        )
+        matches_week = df_hist[mask_week]
+        if not matches_week.empty:
+            matches_week = matches_week.copy()
+            matches_week["_day_diff"] = (matches_week["day_of_week"] - day_of_wk).abs()
+            matches = matches_week.sort_values("_day_diff").head(1)
 
     if matches.empty:
         return None
