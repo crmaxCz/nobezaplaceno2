@@ -15,6 +15,8 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import quote
 
+from historical import load_historical_data, build_yoy_columns, yoy_summary
+
 import pandas as pd
 import streamlit as st
 import httpx
@@ -514,61 +516,129 @@ def _start_prefetch(exclude_lid: int | None, datum: str, datum_do: str) -> None:
 # TABULKA
 # ──────────────────────────────────────────────────────────────────────────────
 
-def render_table(df: pd.DataFrame) -> None:
-    today = pd.Timestamp.today().normalize()
-    has_city = "Pobočka" in df.columns   # True jen v režimu Všechny pobočky
-    rows = ""
+def _fmt_yoy_delta(val: object, suffix: str = '', higher_is_better: bool = True) -> str:
+    """Formats a YoY delta with green/red colour. Returns HTML span."""
+    try:
+        fval = float(val)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return '<span style="opacity:.3">—</span>'
+    if fval != fval:  # NaN check
+        return '<span style="opacity:.3">—</span>'
+    if suffix == ' Kč' and abs(fval) < 50:
+        return '<span style="opacity:.45">≈</span>'
+    if suffix != ' Kč' and abs(fval) < 0.5:
+        return '<span style="opacity:.45">≈</span>'
+    color = '#2ecc71' if (fval > 0) == higher_is_better else '#e74c3c'
+    sign  = '+' if fval > 0 else ''
+    if suffix == ' Kč':
+        formatted = f"{int(fval):,}".replace(',', '\u00a0')
+        return f'<span style="color:{color};font-weight:600">{sign}{formatted}\u00a0Kč</span>'
+    return f'<span style="color:{color};font-weight:600">{sign}{fval:.0f}{suffix}</span>'
+
+
+def render_table(df: pd.DataFrame, show_yoy: bool = True) -> None:
+    today    = pd.Timestamp.today().normalize()
+    has_city = 'Pobočka' in df.columns
+    has_yoy  = show_yoy and 'delta_zaci' in df.columns
+    rows = ''
     for _, r in df.iterrows():
-        pct     = r["Zaplaceno"] / max(r["Žáků celkem"], 1) * 100
-        bar_w   = f"{pct:.1f}%"
-        zap_col = "#2ecc71" if r["Zaplaceno"] > 0 else "#aaa"
-        nez_col = "#e74c3c" if r["Nezaplaceno"] > 0 else "#aaa"
+        pct     = r['Zaplaceno'] / max(r['Žáků celkem'], 1) * 100
+        bar_w   = f'{pct:.1f}%'
+        zap_col = '#2ecc71' if r['Zaplaceno'] > 0 else '#aaa'
+        nez_col = '#e74c3c' if r['Nezaplaceno'] > 0 else '#aaa'
 
         try:
-            termin_dt = pd.to_datetime(str(r["Termín"]).split(" ")[0], format="%d.%m.%Y", dayfirst=True)
+            termin_dt = pd.to_datetime(str(r['Termín']).split(' ')[0], format='%d.%m.%Y', dayfirst=True)
             is_past = pd.notna(termin_dt) and termin_dt.normalize() < today
-        except:
+        except:  # noqa: E722
             is_past = False
 
-        ned = r.get("Nedostavili se", 0)
-        celkem = max(r["Žáků celkem"], 1)
+        ned    = r.get('Nedostavili se', 0)
+        celkem = max(r['Žáků celkem'], 1)
 
         if is_past:
-            ned_pct = (ned / celkem) * 100
-            ned_text = f"<b>{ned}</b> <span style='font-size:0.8em;opacity:0.7'>({ned_pct:.0f} %)</span>"
+            ned_pct  = (ned / celkem) * 100
+            ned_text = f"<b>{ned}</b> <span style='font-size:0.8em;opacity:0.7'>({ned_pct:.0f}\u00a0%)</span>"
         else:
-            ned_text = "-"
+            ned_text = '-'
 
-        # Prefix města do sloupce Termín pouze v režimu "Všechny pobočky"
-        city_prefix = f"{r['Pobočka']} " if has_city and r.get("Pobočka") else ""
+        city_prefix = f"{r['Pobočka']} " if has_city and r.get('Pobočka') else ''
 
-        rows += f"""
-        <tr>
-          <td><a href="{r['URL']}" target="_blank" style="
-              color:inherit;font-weight:600;text-decoration:none;
-              border-bottom:1px dashed #999;">{city_prefix}{r['Termín']}</a></td>
-          <td style="text-align:center">{r['Žáků celkem']}</td>
-          <td style="text-align:center;color:{zap_col};font-weight:600">{r['Zaplaceno']}</td>
-          <td style="text-align:center;color:{nez_col};font-weight:600">{r['Nezaplaceno']}</td>
-          <td style="min-width:180px">
-            <div style="display:flex;align-items:center;gap:8px;">
-              <div style="flex:1;background:#e0e0e0;border-radius:6px;
-                          height:10px;overflow:hidden;">
-                <div style="width:{bar_w};background:#2ecc71;height:100%;
-                            border-radius:6px;"></div>
-              </div>
-              <span style="font-size:.85rem;min-width:38px;
-                           text-align:right">{pct:.0f}&nbsp;%</span>
-            </div>
-          </td>
-          <td style="text-align:center">{ned_text}</td>
-        </tr>"""
+        if has_yoy:
+            h_zaci = r.get('yoy_zaci')
+            _no_pair = True
+            try:
+                _no_pair = h_zaci is None or (h_zaci != h_zaci) or str(h_zaci) in ('', '<NA>')
+            except Exception:
+                pass
+            if _no_pair:
+                yoy_cell = '<td style="text-align:center;opacity:.3;font-size:.8rem">—</td>'
+            else:
+                d_zaci    = r.get('delta_zaci')
+                d_zap_pct = r.get('delta_zap_pct')
+                d_zap_czk = r.get('delta_zaplaceno_czk')
+                yoy_date  = r.get('yoy_date', '')
+                hist_lbl  = f'<span style="opacity:.38;font-size:.7rem">vs.\u00a0{yoy_date}</span>' if yoy_date else ''
+                _z  = _fmt_yoy_delta(d_zaci)
+                _zp = _fmt_yoy_delta(d_zap_pct, '%')
+                _kc = _fmt_yoy_delta(d_zap_czk, ' Kč')
+                yoy_cell = (
+                    '<td style="white-space:nowrap">'
+                    '<div style="font-size:.76rem;display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;">'
+                    f'<span>\U0001f465\u00a0{_z}</span>'
+                    f'<span>\U0001f4b3\u00a0{_zp}</span>'
+                    f'<span>\U0001f4b0\u00a0{_kc}</span>'
+                    f'<span style="opacity:.45;font-size:.7rem">{hist_lbl}</span>'
+                    '</div></td>'
+                )
+        else:
+            yoy_cell = ''
+
+        rows += (
+            '<tr>'
+            f'<td><a href="{r["URL"]}" target="_blank" style="'
+            'color:inherit;font-weight:600;text-decoration:none;'
+            f'border-bottom:1px dashed #999;">{city_prefix}{r["Termín"]}</a></td>'
+            f'<td style="text-align:center">{r["Žáků celkem"]}</td>'
+            f'<td style="text-align:center;color:{zap_col};font-weight:600">{r["Zaplaceno"]}</td>'
+            f'<td style="text-align:center;color:{nez_col};font-weight:600">{r["Nezaplaceno"]}</td>'
+            '<td style="min-width:160px">'
+            '<div style="display:flex;align-items:center;gap:8px;">'
+            '<div style="flex:1;background:#e0e0e0;border-radius:6px;height:10px;overflow:hidden;">'
+            f'<div style="width:{bar_w};background:#2ecc71;height:100%;border-radius:6px;"></div>'
+            '</div>'
+            f'<span style="font-size:.85rem;min-width:38px;text-align:right">{pct:.0f}&nbsp;%</span>'
+            '</div></td>'
+            f'<td style="text-align:center">{ned_text}</td>'
+            f'{yoy_cell}'
+            '</tr>'
+        )
+
+    if has_yoy:
+        colgroup = """
+        <col style="width:15%">  <!-- Termín -->
+        <col style="width:5%">   <!-- Celkem -->
+        <col style="width:7%">   <!-- Zaplaceno -->
+        <col style="width:7%">   <!-- Nezaplaceno -->
+        <col style="width:27%">  <!-- Uhrazeno -->
+        <col style="width:9%">   <!-- Nedostavili se -->
+        <col style="width:30%">  <!-- vs. 2025 -->"""
+        yoy_th = '<th>\U0001f4c5\u00a0vs.\u00a02025</th>'
+    else:
+        colgroup = """
+        <col style="width:16%">  <!-- Termín -->
+        <col style="width:6%">   <!-- Celkem -->
+        <col style="width:8%">   <!-- Zaplaceno -->
+        <col style="width:9%">   <!-- Nezaplaceno -->
+        <col style="width:42%">  <!-- Uhrazeno (progres bar) -->
+        <col style="width:10%">  <!-- Nedostavili se -->"""
+        yoy_th = ''
 
     html = f"""
     <style>
       .nobe-table {{
         width:100%; border-collapse:collapse; font-size:.92rem;
-        table-layout:fixed;            /* enables % column widths */
+        table-layout:fixed;
       }}
       .nobe-table th {{
         padding:8px 10px; text-align:left; border-bottom:2px solid #555;
@@ -581,17 +651,10 @@ def render_table(df: pd.DataFrame) -> None:
       }}
       .nobe-table tr:last-child td {{ border-bottom:none; }}
       .nobe-table tr:hover td {{ background:rgba(128,128,128,.07); }}
-      /* Termin cell: allow wrap but cap width */
       .nobe-table td:first-child {{ white-space:nowrap; text-overflow:ellipsis; }}
     </style>
     <table class="nobe-table">
-      <colgroup>
-        <col style="width:16%">  <!-- Termín -->
-        <col style="width:6%">   <!-- Celkem -->
-        <col style="width:8%">   <!-- Zaplaceno -->
-        <col style="width:9%">   <!-- Nezaplaceno -->
-        <col style="width:42%">  <!-- Uhrazeno (progres bar) -->
-        <col style="width:10%">  <!-- Nedostavili se -->
+      <colgroup>{colgroup}
       </colgroup>
       <thead><tr>
         <th>Termín</th>
@@ -600,6 +663,7 @@ def render_table(df: pd.DataFrame) -> None:
         <th style="text-align:center">❌ Nezaplaceno</th>
         <th>Uhrazeno</th>
         <th style="text-align:center">🚶 Nedostavili se</th>
+        {yoy_th}
       </tr></thead>
       <tbody>{rows}</tbody>
     </table>"""
@@ -702,6 +766,19 @@ def main() -> None:
         st.markdown("---")
         st.caption(f"Dnešní datum: **{date.today().strftime('%d. %m. %Y')}**")
         st.caption("Data se obnovují automaticky každých 30 min.")
+        # ── YoY toggle ──
+        _hist_csv = Path(__file__).parent / 'data_2025.csv'
+        if _hist_csv.exists():
+            st.markdown('---')
+            st.toggle('📊 Srovnání s rokem 2025', value=True, key='show_yoy')
+            if st.session_state.get('show_yoy', True):
+                st.caption('Srovnání každého termínu s odpovídajícím týdnem roku 2025.')
+        else:
+            st.markdown('---')
+            st.caption(
+                '📊 Srovnání s 2025 není dostupné.\n'
+                'Spusť `python scrape_2025.py` a commitni `data_2025.csv`.'
+            )
 
     # ── Nadpis ──
     st.title(f"📊 Termíny – {pobocka_nazev}")
@@ -848,34 +925,68 @@ def main() -> None:
     df["_sort"] = df["Termín"].apply(_sort_key)
     df = df.sort_values("_sort").drop(columns="_sort").reset_index(drop=True)
 
+    # ── YoY příprava ──────────────────────────────────────────────────────────
+    show_yoy = st.session_state.get('show_yoy', True)
+    df_hist  = load_historical_data()
+    yoy_stats: dict = {}
+    if show_yoy and not df_hist.empty:
+        _added_pobocka = 'Pobočka' not in df.columns
+        if _added_pobocka:
+            df = df.copy()
+            df['Pobočka'] = pobocka_nazev
+        df = build_yoy_columns(df, df_hist)
+        if _added_pobocka and 'Pobočka' in df.columns:
+            df = df.drop(columns=['Pobočka'])
+        yoy_stats = yoy_summary(df)
+    # ───────────────────────────────────────────────────────────────────────
+
     # ── Obsah ──
     with content_slot.container():
-        zap_czk  = int(df["Zaplaceno_Kč"].sum())
-        pred_czk = int(df["Předepsáno_Kč"].sum())
+        zap_czk  = int(df['Zaplaceno_Kč'].sum())
+        pred_czk = int(df['Předepsáno_Kč'].sum())
         zap_pct  = zap_czk / pred_czk * 100 if pred_czk else 0
 
-        zaci_total = int(df["Žáků celkem"].sum())
-        total_ned  = int(df["Nedostavili se"].sum()) if "Nedostavili se" in df.columns else 0
+        zaci_total = int(df['Žáků celkem'].sum())
+        total_ned  = int(df['Nedostavili se'].sum()) if 'Nedostavili se' in df.columns else 0
         ned_pct    = total_ned / zaci_total * 100 if zaci_total else 0
 
+        delta_zaci_str = None
+        if yoy_stats.get('paired', 0) > 0:
+            dz   = yoy_stats.get('delta_zaci') or 0
+            sign = '+' if dz >= 0 else ''
+            delta_zaci_str = f'{sign}{dz}\u00a0žáků vs.\u00a02025 ({yoy_stats["paired"]}\u00a0term.)'
+
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("📋 Počet termínů", len(df))
-        col2.metric("👥 Žáků celkem",   zaci_total)
+        col1.metric('📋 Počet termínů', len(df))
+        col2.metric('👥 Žáků celkem', zaci_total, delta=delta_zaci_str)
         col3.metric(
-            "💳 Celkem zaplaceno",
-            int(df["Zaplaceno"].sum()),
-            delta=f"{int(df['Zaplaceno'].sum() / max(zaci_total, 1) * 100)} % má alespoň něco uhrazeno",
+            '💳 Celkem zaplaceno',
+            int(df['Zaplaceno'].sum()),
+            delta=f"{int(df['Zaplaceno'].sum() / max(zaci_total, 1) * 100)}\u00a0% má alespoň něco uhrazeno",
         )
         col3.caption(
-            f"{zap_czk:,} z {pred_czk:,} Kč — {zap_pct:.0f} %"
-            .replace(",", "\u00a0")
+            f"{zap_czk:,} z {pred_czk:,} Kč — {zap_pct:.0f}\u00a0%"
+            .replace(',', '\u00a0')
         )
         col4.metric(
-            "🚶 Nepřišlo celkem",
-            f"{total_ned} ({ned_pct:.0f}\u00a0%)",
+            '🚶 Nepřišlo celkem',
+            f'{total_ned} ({ned_pct:.0f}\u00a0%)',
         )
-        st.markdown("---")
-        render_table(df)
+
+        if yoy_stats.get('paired', 0) > 0:
+            dkc  = yoy_stats.get('delta_zap_czk') or 0
+            sign = '+' if dkc >= 0 else ''
+            kc_col = '#2ecc71' if dkc >= 0 else '#e74c3c'
+            st.markdown(
+                f'<div style="font-size:.82rem;opacity:.8;margin:2px 0 4px">'
+                f'📅 <b>Srovnání s 2025</b>\u00a0–\u00a0'
+                f'zaplaceno Kč: <span style="color:{kc_col};font-weight:600">'
+                f'{sign}{dkc:,}\u00a0Kč</span></div>'.replace(',', '\u00a0'),
+                unsafe_allow_html=True,
+            )
+
+        st.markdown('---')
+        render_table(df, show_yoy=show_yoy and not df_hist.empty)
 
     # ── Background prefetch priority poboček ──
     _start_prefetch(exclude_lid=lokalita_id, datum=datum_str, datum_do=do_str)
